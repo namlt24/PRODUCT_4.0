@@ -1,0 +1,640 @@
+{
+  "info": {
+    "_postman_id": "b1c4a0e2-4f7a-4c3a-9e21-bccs0040cat01",
+    "name": "BCCS Product Catalog 4.0",
+    "description": "Bộ test API cho hệ thống Danh mục sản phẩm viễn thông BCCS 4.0.\n\nThứ tự demo khuyến nghị (chạy lần lượt từ trên xuống bằng Collection Runner):\n1. Tạo sản phẩm (ghi DB + bắn Kafka event) -> tự lưu productId\n2. Đọc qua cache: lần 1 (miss/DB) -> lần 2 (hit L1, nhanh hơn nhiều)\n3. Cập nhật -> Kafka invalidation -> đọc lại ra giá trị mới\n4. Chống Cache Penetration: đọc ID không tồn tại -> 404\n5. Gateway: gọi không token -> 401 (traceId echo từ traceparent)\n\nCổng: gateway 8080 · catalog 8081 · management 8082 · integration 8083.\nGọi thẳng catalog/management để bỏ qua auth của gateway khi demo cache.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Quản lý sản phẩm (Write :8082)",
+      "item": [
+        {
+          "name": "Tạo sản phẩm (CREATE)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sinh code duy nhất để chạy lại nhiều lần không bị trùng (409)",
+                  "pm.collectionVariables.set('uniqueCode', 'SP-TEST-' + Date.now());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Tạo thành công 201', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('Có trả về id', () => pm.expect(body.id).to.be.a('string').and.not.empty);",
+                  "pm.collectionVariables.set('productId', body.id);",
+                  "console.log('productId =', body.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{uniqueCode}}\",\n  \"name\": \"Gói Internet Cáp Quang 100Mbps\",\n  \"category\": \"FTTH\",\n  \"status\": \"ACTIVE\",\n  \"description\": \"Sản phẩm test tạo từ Postman\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products"]
+            },
+            "description": "Ghi vào MariaDB và bắn event CREATED vào Kafka SAU khi commit. Test tự lưu productId vào biến collection."
+          }
+        },
+        {
+          "name": "Xem sản phẩm (management)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Đúng id', () => pm.expect(pm.response.json().id).to.eql(pm.collectionVariables.get('productId')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products/{{productId}}",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products", "{{productId}}"]
+            }
+          }
+        },
+        {
+          "name": "Cập nhật sản phẩm (UPDATE -> Kafka invalidation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Tên đã đổi', () => pm.expect(pm.response.json().name).to.include('ĐÃ SỬA'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"{{uniqueCode}}\",\n  \"name\": \"Gói Cáp Quang 100Mbps (ĐÃ SỬA GIÁ)\",\n  \"category\": \"FTTH\",\n  \"status\": \"ACTIVE\",\n  \"description\": \"Đã cập nhật\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products/{{productId}}",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products", "{{productId}}"]
+            },
+            "description": "Cập nhật -> bắn event UPDATED -> product-catalog-service consume và evict cache key tương ứng ở cả L1 và L2."
+          }
+        },
+        {
+          "name": "Xóa sản phẩm (DELETE)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products/{{productId}}",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products", "{{productId}}"]
+            },
+            "description": "Xóa sản phẩm và bắn event DELETED để hủy cache. Lưu ý: chạy bước này sẽ làm các test đọc phía sau trả 404."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Danh mục - Đọc qua cache 2 tầng (:8081)",
+      "item": [
+        {
+          "name": "Liệt kê sản phẩm (paged)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('Có mảng content', () => pm.expect(pm.response.json().content).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/products?page=0&size=20",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "products"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" },
+                { "key": "category", "value": "FTTH", "disabled": true },
+                { "key": "status", "value": "ACTIVE", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Đọc sản phẩm - lần 1 (cache MISS -> DB)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('firstReadMs', pm.response.responseTime);",
+                  "console.log('Lần 1 (DB):', pm.response.responseTime, 'ms');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/products/{{productId}}",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "products", "{{productId}}"]
+            },
+            "description": "Lần đọc đầu: L1 miss, L2 miss -> nạp từ DB -> ghi vào L1 + L2 (Redis TTL ngẫu nhiên)."
+          }
+        },
+        {
+          "name": "Đọc sản phẩm - lần 2 (cache HIT L1)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const second = pm.response.responseTime;",
+                  "const first = Number(pm.collectionVariables.get('firstReadMs')) || 9999;",
+                  "console.log('Lần 2 (cache):', second, 'ms | Lần 1:', first, 'ms');",
+                  "pm.test('Lần 2 nhanh hơn (cache hit)', () => pm.expect(second).to.be.below(first + 1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/products/{{productId}}",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "products", "{{productId}}"]
+            },
+            "description": "Lần đọc thứ 2: trúng L1 Caffeine trong JVM, không round-trip mạng -> nhanh hơn nhiều lần."
+          }
+        },
+        {
+          "name": "Chống Penetration - đọc ID không tồn tại (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('Body có traceId', () => pm.expect(pm.response.json().traceId).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/products/khong-ton-tai-123",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "products", "khong-ton-tai-123"]
+            },
+            "description": "ID rác -> service cache một NULL marker TTL ngắn -> lần gọi sai tiếp theo trả 404 từ cache, không đập vào DB."
+          }
+        },
+        {
+          "name": "Liệt kê gói cước (offers)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/offers?page=0&size=20",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "offers"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" },
+                { "key": "productId", "value": "{{productId}}", "disabled": true }
+              ]
+            },
+            "description": "Lưu ý: bảng offer chưa có API tạo (chỉ có CRUD product). Cần seed dữ liệu offer qua SQL nếu muốn thấy kết quả."
+          }
+        },
+        {
+          "name": "Xem gói cước theo id",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/offers/{{offerId}}",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "offers", "{{offerId}}"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. API Gateway (:8080)",
+      "item": [
+        {
+          "name": "Đọc qua Gateway - KHÔNG token (expect 401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "const sent = '0af7651916cd43dd8448eb211c80319c';",
+                  "pm.test('traceId echo đúng từ traceparent (W3C)', () => pm.expect(pm.response.json().traceId).to.eql(sent));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "traceparent", "value": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }
+            ],
+            "url": {
+              "raw": "{{gatewayUrl}}/api/v1/products/{{productId}}",
+              "host": ["{{gatewayUrl}}"],
+              "path": ["api", "v1", "products", "{{productId}}"]
+            },
+            "description": "Không có Bearer token -> AuthenticationFilter trả 401. traceId trong response = trace-id trong header traceparent đối tác gửi vào -> chứng minh tiếp nhận chuẩn W3C Trace Context."
+          }
+        },
+        {
+          "name": "Đọc qua Gateway - CÓ token",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{bearerToken}}" },
+              { "key": "traceparent", "value": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01" }
+            ],
+            "url": {
+              "raw": "{{gatewayUrl}}/api/v1/products/{{productId}}",
+              "host": ["{{gatewayUrl}}"],
+              "path": ["api", "v1", "products", "{{productId}}"]
+            },
+            "description": "Đặt biến bearerToken bằng JWT hợp lệ (ký bằng private key tương ứng JWT_PUBLIC_KEY). Khi JWT_PUBLIC_KEY rỗng, gateway sẽ gọi introspection sang integration-service."
+          }
+        },
+        {
+          "name": "Health qua Gateway (permit-all)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gatewayUrl}}/actuator/health",
+              "host": ["{{gatewayUrl}}"],
+              "path": ["actuator", "health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Integration - Auth bên thứ 3 (:8083)",
+      "item": [
+        {
+          "name": "Validate token (introspection)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{bearerToken}}" }
+            ],
+            "url": {
+              "raw": "{{integrationUrl}}/api/v1/integration/validate",
+              "host": ["{{integrationUrl}}"],
+              "path": ["api", "v1", "integration", "validate"]
+            },
+            "description": "Trả về kiểu introspection: {active, sub, client_id, exp}. active=false nếu token không hợp lệ/hết hạn hoặc cổng auth bên thứ 3 không khả dụng (circuit breaker)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Observability",
+      "item": [
+        {
+          "name": "Catalog - Prometheus metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/actuator/prometheus",
+              "host": ["{{catalogUrl}}"],
+              "path": ["actuator", "prometheus"]
+            },
+            "description": "JVM, HikariCP pool (catalog-read-pool), cache, Kafka consumer lag, http request rate/latency."
+          }
+        },
+        {
+          "name": "Catalog - Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/actuator/health",
+              "host": ["{{catalogUrl}}"],
+              "path": ["actuator", "health"]
+            }
+          }
+        },
+        {
+          "name": "Swagger / OpenAPI JSON (catalog)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/v3/api-docs",
+              "host": ["{{catalogUrl}}"],
+              "path": ["v3", "api-docs"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. Case lỗi & biên (validation / conflict / rate limit)",
+      "item": [
+        {
+          "name": "Tạo SP - status sai (expect 400 validation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('Có thông báo lỗi field', () => pm.expect(pm.response.json().message).to.include('status'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"SP-BAD-001\",\n  \"name\": \"San pham status sai\",\n  \"category\": \"FTTH\",\n  \"status\": \"KHONG_HOP_LE\",\n  \"description\": \"status khong thuoc ACTIVE|INACTIVE|RETIRED\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products"]
+            },
+            "description": "status vi phạm @Pattern(ACTIVE|INACTIVE|RETIRED) -> MethodArgumentNotValidException -> GlobalExceptionHandler trả 400."
+          }
+        },
+        {
+          "name": "Tạo SP - thiếu trường bắt buộc (expect 400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category\": \"FTTH\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products"]
+            },
+            "description": "Thiếu code/name/status (@NotBlank) -> 400."
+          }
+        },
+        {
+          "name": "Tạo SP trùng code (expect 409 Conflict)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 lần đầu hoặc 409 nếu đã tồn tại', () => pm.expect(pm.response.code).to.be.oneOf([201, 409]));",
+                  "if (pm.response.code === 409) { pm.test('Thông báo trùng code', () => pm.expect(pm.response.json().message).to.include('exists')); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"SP-DUP-FIXED-001\",\n  \"name\": \"San pham trung code\",\n  \"category\": \"FTTH\",\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products"]
+            },
+            "description": "Chạy lần 1 -> 201. Chạy lại -> existsByCode=true -> ResponseStatusException(409 CONFLICT). Minh chứng ràng buộc unique code."
+          }
+        },
+        {
+          "name": "Cập nhật SP không tồn tại (expect 404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"code\": \"SP-NONE\",\n  \"name\": \"x\",\n  \"category\": \"FTTH\",\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": {
+              "raw": "{{managementUrl}}/api/v1/management/products/khong-ton-tai-999",
+              "host": ["{{managementUrl}}"],
+              "path": ["api", "v1", "management", "products", "khong-ton-tai-999"]
+            }
+          }
+        },
+        {
+          "name": "Liệt kê SP - lọc theo category & status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{catalogUrl}}/api/v1/products?page=0&size=50&category=FTTH&status=ACTIVE",
+              "host": ["{{catalogUrl}}"],
+              "path": ["api", "v1", "products"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "50" },
+                { "key": "category", "value": "FTTH" },
+                { "key": "status", "value": "ACTIVE" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Validate khi KHÔNG có token (active=false)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK (trả introspection)', () => pm.response.to.have.status(200));",
+                  "pm.test('active=false', () => pm.expect(pm.response.json().active).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{integrationUrl}}/api/v1/integration/validate",
+              "host": ["{{integrationUrl}}"],
+              "path": ["api", "v1", "integration", "validate"]
+            },
+            "description": "Không gửi Authorization -> trả {active:false, error:missing_bearer_token}."
+          }
+        },
+        {
+          "name": "Rate limit - bắn liên tục (kỳ vọng có 429)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Lưu ý: rate limit áp ở Gateway (:8080) cho route đã xác thực.",
+                  "// Để thấy 429, cần token hợp lệ và bắn vượt replenishRate (200/s).",
+                  "// Dùng Collection Runner với số vòng lặp lớn trên request này.",
+                  "pm.test('Status 200/401/429 hợp lệ', () => pm.expect(pm.response.code).to.be.oneOf([200, 401, 429]));",
+                  "if (pm.response.code === 429) { pm.test('Đã chạm rate limit', () => true); }"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{bearerToken}}" }
+            ],
+            "url": {
+              "raw": "{{gatewayUrl}}/api/v1/products/{{productId}}",
+              "host": ["{{gatewayUrl}}"],
+              "path": ["api", "v1", "products", "{{productId}}"]
+            },
+            "description": "RequestRateLimiter theo clientId (token-bucket Redis). Chạy nhiều vòng để kích hoạt HTTP 429."
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    { "key": "gatewayUrl", "value": "http://localhost:8080" },
+    { "key": "catalogUrl", "value": "http://localhost:8081" },
+    { "key": "managementUrl", "value": "http://localhost:8082" },
+    { "key": "integrationUrl", "value": "http://localhost:8083" },
+    { "key": "productId", "value": "" },
+    { "key": "offerId", "value": "" },
+    { "key": "uniqueCode", "value": "" },
+    { "key": "firstReadMs", "value": "" },
+    { "key": "bearerToken", "value": "" }
+  ]
+}
