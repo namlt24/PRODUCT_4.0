@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mariadb-daily-backup
+  namespace: bccs
+spec:
+  # 02:00 every day (cluster timezone)
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 7
+  failedJobsHistoryLimit: 7
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: 3600
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: mariadb:11.3
+              command: ["/bin/bash", "/scripts/backup.sh"]
+              env:
+                - name: DB_HOST
+                  value: "mariadb.bccs.svc.cluster.local"
+                - name: DB_NAME
+                  value: "bccs_catalog"
+                - name: BACKUP_DIR
+                  value: "/backups"
+                - name: RETENTION_DAYS
+                  value: "14"
+                # Credentials come from the same Secret the apps use
+                - name: DB_USER
+                  valueFrom:
+                    secretKeyRef:
+                      name: bccs-secrets
+                      key: DB_USER
+                - name: DB_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: bccs-secrets
+                      key: DB_PASSWORD
+              volumeMounts:
+                - name: backup-script
+                  mountPath: /scripts
+                - name: backup-storage
+                  mountPath: /backups
+          volumes:
+            - name: backup-script
+              configMap:
+                name: db-backup-script
+                defaultMode: 0755
+            - name: backup-storage
+              persistentVolumeClaim:
+                claimName: bccs-db-backups
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bccs-db-backups
+  namespace: bccs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 50Gi
+# Create the script ConfigMap with:
+#   kubectl -n bccs create configmap db-backup-script --from-file=backup.sh=scripts/db-backup/backup.sh

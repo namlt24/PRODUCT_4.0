@@ -1,0 +1,41 @@
+package com.telecom.bccs.integration.web;
+
+import com.telecom.bccs.common.tracing.MdcConstants;
+import com.telecom.bccs.common.tracing.TraceContext;
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.slf4j.MDC;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class TraceContextFilter extends OncePerRequestFilter {
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+        try {
+            String traceId = header(request, MdcConstants.HEADER_TRACE_ID, TraceContext.newTraceId());
+            MDC.put(MdcConstants.MDC_TRACE_ID, traceId);
+            MDC.put(MdcConstants.MDC_SPAN_ID, header(request, MdcConstants.HEADER_SPAN_ID, TraceContext.newSpanId()));
+            MDC.put(MdcConstants.MDC_CLIENT_ID, header(request, MdcConstants.HEADER_CLIENT_ID, "unknown"));
+            MDC.put(MdcConstants.MDC_SERVICE_NAME, "integration-service");
+            response.setHeader(MdcConstants.HEADER_TRACE_ID, traceId);
+            filterChain.doFilter(request, response);
+        } finally {
+            MDC.clear();
+        }
+    }
+
+    private String header(HttpServletRequest request, String name, String fallback) {
+        String value = request.getHeader(name);
+        return (value == null || value.isBlank()) ? fallback : value;
+    }
+}

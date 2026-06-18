@@ -1,0 +1,96 @@
+server:
+  port: 8081
+  tomcat:
+    threads:
+      max: 400
+      min-spare: 50
+
+spring:
+  application:
+    name: product-catalog-service
+  threads:
+    virtual:
+      enabled: true   # Java 21 virtual threads for high-concurrency reads
+
+  datasource:
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:bccs_catalog}?useUnicode=true&characterEncoding=UTF-8&useServerPrepStmts=true&cachePrepStmts=true
+    username: ${DB_USER}            # injected from env / k8s secret — never hardcoded
+    password: ${DB_PASSWORD}
+    driver-class-name: org.mariadb.jdbc.Driver
+    hikari:
+      pool-name: catalog-read-pool
+      # Read-heavy service: larger pool, but bounded so the shared MariaDB instance is not
+      # starved of connections by this one service (sum across services < DB max_connections).
+      maximum-pool-size: 40
+      minimum-idle: 10
+      connection-timeout: 3000      # fail fast instead of piling up threads
+      idle-timeout: 600000
+      max-lifetime: 1700000         # < MariaDB wait_timeout to avoid stale connections
+      keepalive-time: 120000
+      read-only: true               # this service only reads
+      data-source-properties:
+        cachePrepStmts: true
+        prepStmtCacheSize: 500
+        prepStmtCacheSqlLimit: 2048
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate.jdbc.batch_size: 50
+      hibernate.dialect: org.hibernate.dialect.MariaDBDialect
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 200ms
+      lettuce:
+        pool:
+          max-active: 64
+          max-idle: 32
+          min-idle: 8
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: catalog-cache-invalidator
+
+# Two-level cache tuning (read by TwoLevelCacheService)
+cache:
+  l2:
+    base-ttl-seconds: 600     # 10 min baseline
+    jitter-seconds: 120       # +0..120s random => avalanche protection
+    null-ttl-seconds: 60      # short TTL for "not found" markers => penetration protection
+
+app:
+  kafka:
+    topic:
+      catalog-changes: catalog.changes
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+  health:
+    redis:
+      enabled: true   # surfaced in /health but does not fail readiness (see groups below)
+  metrics:
+    tags:
+      application: ${spring.application.name}
+  tracing:
+    sampling:
+      probability: 1.0
+    propagation:
+      type: w3c
+
+# Keep the pod READY even if Redis/Kafka are degraded — the service fails open to the DB
+management.endpoint.health.group.readiness.include: db,ping

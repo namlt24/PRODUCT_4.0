@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: product-catalog-config
+  namespace: bccs
+data:
+  DB_HOST: "mariadb.bccs.svc.cluster.local"
+  DB_PORT: "3306"
+  DB_NAME: "bccs_catalog"
+  REDIS_HOST: "redis-master.bccs.svc.cluster.local"
+  REDIS_PORT: "6379"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-headless.bccs.svc.cluster.local:9092"
+  SPRING_PROFILES_ACTIVE: "prod"
+  SERVICE_ENV: "k8s"

@@ -1,0 +1,10 @@
+# Keep build context small and reproducible
+**/target
+.git
+.env
+*.md
+**/k8s
+monitoring
+scripts
+.idea
+**/*.iml

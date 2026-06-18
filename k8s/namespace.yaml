@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bccs
+  labels:
+    name: bccs
+    platform: product-catalog

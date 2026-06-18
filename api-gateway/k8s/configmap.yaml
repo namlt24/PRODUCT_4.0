@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-gateway-config
+  namespace: bccs
+data:
+  # Non-secret runtime config only. Credentials/keys live in the bccs-secrets Secret.
+  REDIS_HOST: "redis-master.bccs.svc.cluster.local"
+  REDIS_PORT: "6379"
+  CATALOG_URI: "http://product-catalog-service.bccs.svc.cluster.local:8081"
+  MANAGEMENT_URI: "http://product-management-service.bccs.svc.cluster.local:8082"
+  INTEGRATION_URI: "http://integration-service.bccs.svc.cluster.local:8083"
+  INTROSPECTION_URI: "http://integration-service.bccs.svc.cluster.local:8083/api/v1/integration/validate"
+  SERVICE_ENV: "k8s"
+  SPRING_PROFILES_ACTIVE: "prod"

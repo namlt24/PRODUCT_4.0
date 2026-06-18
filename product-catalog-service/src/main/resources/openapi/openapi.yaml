@@ -1,0 +1,161 @@
+openapi: 3.0.3
+info:
+  title: BCCS Product Catalog API
+  description: >
+    Read-only catalog API consumed by 3rd-party partners to retrieve telecom products,
+    price plans (offers) and pricing. Contract-first definition; the service implements
+    these operations behind a two-level cache (Caffeine L1 + Redis L2).
+  version: 4.0.0
+  contact:
+    name: BCCS Platform Team
+servers:
+  - url: https://api.bccs.telecom.vn
+    description: Production (via API Gateway)
+  - url: http://localhost:8080
+    description: Local (via gateway)
+security:
+  - bearerAuth: []
+tags:
+  - name: products
+  - name: offers
+paths:
+  /api/v1/products:
+    get:
+      tags: [products]
+      summary: List products (paged)
+      operationId: listProducts
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 0, minimum: 0 } }
+        - { name: size, in: query, schema: { type: integer, default: 20, minimum: 1, maximum: 200 } }
+        - { name: category, in: query, schema: { type: string }, description: Filter by category code }
+        - { name: status, in: query, schema: { type: string, enum: [ACTIVE, INACTIVE, RETIRED] } }
+      responses:
+        '200':
+          description: Page of products
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductPage' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/products/{productId}:
+    get:
+      tags: [products]
+      summary: Get a single product by id
+      operationId: getProduct
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Product found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Product' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/offers:
+    get:
+      tags: [offers]
+      summary: List offers (price plans)
+      operationId: listOffers
+      parameters:
+        - { name: page, in: query, schema: { type: integer, default: 0, minimum: 0 } }
+        - { name: size, in: query, schema: { type: integer, default: 20, minimum: 1, maximum: 200 } }
+        - { name: productId, in: query, schema: { type: string }, description: Offers attached to a product }
+      responses:
+        '200':
+          description: Page of offers
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OfferPage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/v1/offers/{offerId}:
+    get:
+      tags: [offers]
+      summary: Get a single offer by id
+      operationId: getOffer
+      parameters:
+        - name: offerId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Offer found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Offer' }
+        '404': { $ref: '#/components/responses/NotFound' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Unauthorized:
+      description: Missing or invalid token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    RateLimited:
+      description: Too many requests for this client
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+  schemas:
+    Product:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        name: { type: string }
+        category: { type: string }
+        status: { type: string, enum: [ACTIVE, INACTIVE, RETIRED] }
+        description: { type: string }
+        updatedAt: { type: string, format: date-time }
+      required: [id, code, name, status]
+    Offer:
+      type: object
+      properties:
+        id: { type: string }
+        productId: { type: string }
+        code: { type: string }
+        name: { type: string }
+        price: { type: number, format: double }
+        currency: { type: string, default: VND }
+        billingCycle: { type: string, enum: [MONTHLY, YEARLY, ONE_TIME] }
+        status: { type: string, enum: [ACTIVE, INACTIVE] }
+      required: [id, productId, code, price]
+    ProductPage:
+      type: object
+      properties:
+        content: { type: array, items: { $ref: '#/components/schemas/Product' } }
+        page: { type: integer }
+        size: { type: integer }
+        totalElements: { type: integer, format: int64 }
+        totalPages: { type: integer }
+    OfferPage:
+      type: object
+      properties:
+        content: { type: array, items: { $ref: '#/components/schemas/Offer' } }
+        page: { type: integer }
+        size: { type: integer }
+        totalElements: { type: integer, format: int64 }
+        totalPages: { type: integer }
+    ApiError:
+      type: object
+      properties:
+        timestamp: { type: string, format: date-time }
+        status: { type: integer }
+        error: { type: string }
+        message: { type: string }
+        path: { type: string }
+        traceId: { type: string }

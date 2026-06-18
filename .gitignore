@@ -1,0 +1,43 @@
+# ===== Secrets / local env (NEVER commit) =====
+.env
+*.env
+!.env.example
+**/secrets.yaml
+*.pem
+*.key
+
+# ===== Build output =====
+target/
+**/target/
+*.jar
+*.war
+*.class
+
+# ===== Maven =====
+.mvn/
+mvnw
+mvnw.cmd
+
+# ===== IDE =====
+.idea/
+*.iml
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+*.code-workspace
+
+# ===== OS =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ===== Logs / temp =====
+*.log
+logs/
+tmp/
+*.tmp
+
+# ===== Docker / data volumes (if bind-mounted locally) =====
+db-backups/

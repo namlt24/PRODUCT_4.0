@@ -1,0 +1,43 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: bccs-product-catalog
+    env: local
+
+scrape_configs:
+  # Spring Boot services expose Micrometer metrics at /actuator/prometheus
+  - job_name: 'api-gateway'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['api-gateway:8080']
+        labels: { service: api-gateway }
+
+  - job_name: 'product-catalog-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['product-catalog-service:8081']
+        labels: { service: product-catalog-service }
+
+  - job_name: 'product-management-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['product-management-service:8082']
+        labels: { service: product-management-service }
+
+  - job_name: 'integration-service'
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ['integration-service:8083']
+        labels: { service: integration-service }
+
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+# Useful metric names exported by these apps:
+#   jvm_memory_used_bytes, jvm_gc_pause_seconds              (JVM)
+#   hikaricp_connections_active, hikaricp_connections_pending (HikariCP pool)
+#   cache_gets_total{result="hit|miss"}, cache_size           (Caffeine hit/miss)
+#   spring_kafka_listener_seconds, kafka_consumer_fetch_manager_records_lag (Kafka lag)
+#   http_server_requests_seconds_count / _max                 (request rate & latency)
