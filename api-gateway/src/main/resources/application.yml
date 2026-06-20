@@ -7,6 +7,20 @@ server:
 spring:
   application:
     name: api-gateway
+  # DataSource CHỈ để @Scheduled nạp cấu hình rate-limit theo đối tác (KHÔNG dùng trên hot path).
+  # initialization-fail-timeout=-1: DB lỗi lúc khởi động cũng KHÔNG làm sập gateway (fail-safe).
+  datasource:
+    url: jdbc:mariadb://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:bccs_catalog}?useUnicode=true&characterEncoding=UTF-8
+    username: ${DB_USER:}
+    password: ${DB_PASSWORD:}
+    driver-class-name: org.mariadb.jdbc.Driver
+    hikari:
+      pool-name: gateway-ratelimit-pool
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 3000
+      initialization-fail-timeout: -1
+      read-only: true
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -39,10 +53,9 @@ spring:
           filters:
             - name: RequestRateLimiter
               args:
-                key-resolver: "#{@clientIdKeyResolver}"
-                redis-rate-limiter.replenishRate: 200      # tokens/sec per client
-                redis-rate-limiter.burstCapacity: 400      # burst headroom
-                redis-rate-limiter.requestedTokens: 1
+                # Dynamic rate limiting theo ĐỐI TÁC: key = clientId, hạn mức nạp động từ DB
+                key-resolver: "#{@partnerKeyResolver}"
+                rate-limiter: "#{@partnerRateLimiter}"
             - name: CircuitBreaker
               args:
                 name: catalogCircuitBreaker
@@ -65,9 +78,8 @@ spring:
           filters:
             - name: RequestRateLimiter
               args:
-                key-resolver: "#{@clientIdKeyResolver}"
-                redis-rate-limiter.replenishRate: 50
-                redis-rate-limiter.burstCapacity: 100
+                key-resolver: "#{@partnerKeyResolver}"
+                rate-limiter: "#{@partnerRateLimiter}"
             - name: CircuitBreaker
               args:
                 name: managementCircuitBreaker
@@ -124,6 +136,13 @@ gateway:
     introspection-uri: ${INTROSPECTION_URI:http://integration-service:8083/api/v1/integration/validate}
     # Paths that bypass authentication (comma-separated; bound to List<String> via @Value)
     permit-all: /actuator/health,/actuator/health/**,/actuator/prometheus,/fallback/**
+
+  # Giới hạn TPS mặc định (fallback khi đối tác chưa khai báo / DB không khả dụng) + chu kỳ refresh
+  rate-limit:
+    default-replenish-rate: ${RL_DEFAULT_RATE:50}
+    default-burst-capacity: ${RL_DEFAULT_BURST:100}
+    default-requested-tokens: 1
+    refresh-ms: ${RL_REFRESH_MS:15000}
 
 management:
   endpoints:

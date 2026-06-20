@@ -7,6 +7,10 @@ data:
   # Non-secret runtime config only. Credentials/keys live in the bccs-secrets Secret.
   REDIS_HOST: "redis-master.bccs.svc.cluster.local"
   REDIS_PORT: "6379"
+  # DB để nạp cấu hình rate-limit động (DB_USER/DB_PASSWORD lấy từ Secret bccs-secrets)
+  DB_HOST: "mariadb.bccs.svc.cluster.local"
+  DB_PORT: "3306"
+  DB_NAME: "bccs_catalog"
   CATALOG_URI: "http://product-catalog-service.bccs.svc.cluster.local:8081"
   MANAGEMENT_URI: "http://product-management-service.bccs.svc.cluster.local:8082"
   INTEGRATION_URI: "http://integration-service.bccs.svc.cluster.local:8083"

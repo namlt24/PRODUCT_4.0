@@ -32,6 +32,16 @@
             <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
         </dependency>
 
+        <!-- JDBC (đọc cấu hình rate-limit động theo đối tác từ DB; chỉ chạy trong @Scheduled refresh) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.mariadb.jdbc</groupId>
+            <artifactId>mariadb-java-client</artifactId>
+        </dependency>
+
         <!-- Resilience4j circuit breaker for the reactive stack -->
         <dependency>
             <groupId>org.springframework.cloud</groupId>

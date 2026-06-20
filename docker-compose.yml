@@ -158,9 +158,17 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      mariadb:
+        condition: service_healthy
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # DB để nạp cấu hình rate-limit động theo đối tác
+      DB_HOST: mariadb
+      DB_PORT: "3306"
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
       CATALOG_URI: http://product-catalog-service:8081
       MANAGEMENT_URI: http://product-management-service:8082
       INTEGRATION_URI: http://integration-service:8083
