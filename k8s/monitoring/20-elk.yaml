@@ -1,0 +1,190 @@
+# ====================== Elasticsearch (single-node, test) ======================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  namespace: monitoring
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: elasticsearch }
+  template:
+    metadata:
+      labels: { app: elasticsearch }
+    spec:
+      initContainers:
+        # ES yêu cầu vm.max_map_count >= 262144 (sysctl host-level)
+        - name: set-vm-max-map
+          image: busybox:1.36
+          command: ["sh", "-c", "sysctl -w vm.max_map_count=262144"]
+          securityContext: { privileged: true }
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.13.4
+          env:
+            - { name: discovery.type, value: "single-node" }
+            - { name: xpack.security.enabled, value: "false" }
+            - { name: ES_JAVA_OPTS, value: "-Xms512m -Xmx512m" }
+            - { name: bootstrap.memory_lock, value: "false" }
+          ports:
+            - { containerPort: 9200 }
+          resources:
+            requests: { cpu: "200m", memory: "768Mi" }
+            limits: { cpu: "1500m", memory: "1280Mi" }
+          readinessProbe:
+            httpGet: { path: /_cluster/health, port: 9200 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 20
+          volumeMounts:
+            - { name: data, mountPath: /usr/share/elasticsearch/data }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: monitoring
+spec:
+  selector: { app: elasticsearch }
+  ports: [{ port: 9200, targetPort: 9200 }]
+---
+# ====================== Kibana ======================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kibana }
+  template:
+    metadata:
+      labels: { app: kibana }
+    spec:
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:8.13.4
+          env:
+            - { name: ELASTICSEARCH_HOSTS, value: "http://elasticsearch:9200" }
+          ports: [{ containerPort: 5601 }]
+          resources:
+            requests: { cpu: "100m", memory: "512Mi" }
+            limits: { cpu: "1000m", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /api/status, port: 5601 }
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: monitoring
+spec:
+  selector: { app: kibana }
+  ports: [{ port: 5601, targetPort: 5601 }]
+---
+# ====================== Filebeat (DaemonSet) RBAC ======================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: filebeat
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: filebeat
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "nodes"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: filebeat
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: filebeat
+subjects:
+  - kind: ServiceAccount
+    name: filebeat
+    namespace: monitoring
+---
+# ====================== Filebeat config ======================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  namespace: monitoring
+data:
+  filebeat.yml: |
+    filebeat.inputs:
+      - type: container
+        # Chỉ lấy log các pod trong namespace bccs (giảm volume)
+        paths:
+          - /var/log/containers/*_bccs_*.log
+        processors:
+          - add_kubernetes_metadata:
+              host: ${NODE_NAME}
+              matchers:
+                - logs_path: { logs_path: "/var/log/containers/" }
+          # App ghi JSON ra stdout -> giải mã để có traceId/serviceName/level... thành field
+          - decode_json_fields:
+              fields: ["message"]
+              target: ""
+              overwrite_keys: true
+              add_error_key: true
+    output.elasticsearch:
+      hosts: ["http://elasticsearch:9200"]
+      index: "bccs-logs-%{+yyyy.MM.dd}"
+    setup.ilm.enabled: false
+    setup.template.name: "bccs-logs"
+    setup.template.pattern: "bccs-logs-*"
+    logging.level: warning
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: filebeat
+  namespace: monitoring
+spec:
+  selector:
+    matchLabels: { app: filebeat }
+  template:
+    metadata:
+      labels: { app: filebeat }
+    spec:
+      serviceAccountName: filebeat
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: filebeat
+          image: docker.elastic.co/beats/filebeat:8.13.4
+          args: ["-e", "-c", "/etc/filebeat.yml"]
+          env:
+            - name: NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+          securityContext:
+            runAsUser: 0
+          resources:
+            requests: { cpu: "50m", memory: "100Mi" }
+            limits: { cpu: "500m", memory: "200Mi" }
+          volumeMounts:
+            - { name: config, mountPath: /etc/filebeat.yml, subPath: filebeat.yml, readOnly: true }
+            - { name: varlog, mountPath: /var/log, readOnly: true }
+            - { name: data, mountPath: /usr/share/filebeat/data }
+      volumes:
+        - name: config
+          configMap: { name: filebeat-config }
+        - name: varlog
+          hostPath: { path: /var/log }
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,61 @@
+# ====================== Elastic APM Server ======================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: apm-server-config
+  namespace: monitoring
+data:
+  apm-server.yml: |
+    apm-server:
+      host: "0.0.0.0:8200"
+      # Standalone (không Fleet): để APM Server tự tạo index template + data stream,
+      # không chờ "apm integration" cài qua Kibana
+      data_streams:
+        wait_for_integration: false
+      kibana:
+        enabled: true
+        host: "http://kibana:5601"
+    output.elasticsearch:
+      hosts: ["http://elasticsearch:9200"]
+    logging.level: warning
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: apm-server
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: apm-server }
+  template:
+    metadata:
+      labels: { app: apm-server }
+    spec:
+      containers:
+        - name: apm-server
+          image: docker.elastic.co/apm/apm-server:8.13.4
+          args: ["-e", "-c", "/usr/share/apm-server/apm-server.yml"]
+          ports: [{ containerPort: 8200 }]
+          resources:
+            requests: { cpu: "100m", memory: "192Mi" }
+            limits: { cpu: "1000m", memory: "384Mi" }
+          volumeMounts:
+            - { name: config, mountPath: /usr/share/apm-server/apm-server.yml, subPath: apm-server.yml, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /, port: 8200 }
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 15
+      volumes:
+        - name: config
+          configMap: { name: apm-server-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apm-server
+  namespace: monitoring
+spec:
+  selector: { app: apm-server }
+  ports: [{ port: 8200, targetPort: 8200 }]
