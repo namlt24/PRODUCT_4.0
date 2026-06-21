@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BCCS Product Catalog 4.0 — Tài liệu hạ tầng tổng hợp</title>
+<style>
+  :root { --fg:#1f2328; --muted:#57606a; --border:#d0d7de; --bg:#fff; --code-bg:#f6f8fa; --accent:#0969da; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--fg);
+         background:var(--bg); line-height:1.6; max-width:920px; margin:0 auto; padding:48px 24px; }
+  h1,h2,h3,h4 { line-height:1.25; margin-top:1.6em; margin-bottom:.5em; font-weight:600; }
+  h1 { font-size:1.9em; border-bottom:2px solid var(--border); padding-bottom:.3em; }
+  h2 { font-size:1.45em; border-bottom:1px solid var(--border); padding-bottom:.25em; }
+  h3 { font-size:1.2em; } h4 { font-size:1.05em; }
+  p { margin:.6em 0; }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  code { background:var(--code-bg); padding:.15em .4em; border-radius:6px; font-size:.88em;
+         font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+        padding:14px 16px; overflow:auto; font-size:.85em; }
+  pre code { background:none; padding:0; }
+  blockquote { border-left:4px solid var(--accent); margin:1em 0; padding:.4em 1em;
+               background:#f6f8fa; color:var(--muted); border-radius:0 6px 6px 0; }
+  table { border-collapse:collapse; width:100%; margin:1em 0; font-size:.92em; }
+  th,td { border:1px solid var(--border); padding:8px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); font-weight:600; }
+  tr:nth-child(even) td { background:#fafbfc; }
+  hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+  ul,ol { padding-left:1.6em; } li { margin:.25em 0; }
+  input[type=checkbox] { margin-right:.4em; }
+  @media print { body { padding:0; max-width:none; } pre,table { page-break-inside:avoid; } a { color:var(--fg); } }
+</style>
+</head>
+<body>
+<h1>BCCS Product Catalog 4.0 — Tài liệu hạ tầng tổng hợp</h1>
+<blockquote>Tài liệu bảo vệ trước hội đồng. Gồm 5 phần:<br>1. Hạ tầng đã xây dựng thế nào, tại sao, đã best-practice chưa<br>2. Giải thích chi tiết code từng thành phần hạ tầng<br>3. Kế hoạch triển khai K8s môi trường test (kèm CI/CD)<br>4. Kế hoạch sizing + test tải (hướng dẫn từng bước)<br>5. Kế hoạch deploy production</blockquote>
+<hr>
+<h1>PHẦN 1 — Hạ tầng đã xây dựng như thế nào? Tại sao? Đã best-practice chưa?</h1>
+<h2>1.1. Bức tranh tổng thể</h2>
+<pre><code>                 ┌──────────────────────────────────────────────────────┐
+   Đối tác       │                   API GATEWAY (8080)                  │
+  (3rd-party) ──▶│  Trace → Auth(API key) → Rate-Limit động → CircuitBreaker│
+                 └───────────┬───────────────────────┬──────────────────┘
+                             │ đọc                    │ ghi
+                   ┌─────────▼─────────┐    ┌─────────▼──────────────┐
+                   │ product-catalog   │    │ product-management     │
+                   │ (8081, READ)      │    │ (8082, WRITE)          │
+                   │ L1 Caffeine       │    │ @Transactional         │
+                   │ L2 Redis          │    │ afterCommit → Kafka    │
+                   └───┬───────┬───────┘    └─────────┬──────────────┘
+                       │       │   ▲                  │ catalog.changes
+                  Redis│    DB │   └── evict ─ Kafka ◀┘  (sau khi commit)
+                       ▼       ▼
+                   [Redis]  [MariaDB bccs_catalog]  ◀── integration-service (8083, auth NỘI BỘ FE↔BE)</code></pre>
+<p><strong>4 service + 1 thư viện dùng chung:</strong></p>
+<ul><li><code>api-gateway</code> — WebFlux/reactive, điểm vào duy nhất; xác thực, định tuyến, rate-limit, circuit breaker.</li><li><code>product-catalog-service</code> — servlet + virtual threads; đường ĐỌC sub-ms qua cache 2 tầng.</li><li><code>product-management-service</code> — servlet; đường GHI, phát sự kiện đổi dữ liệu.</li><li><code>integration-service</code> — xác thực người dùng <strong>nội bộ</strong> (FE quản trị ↔ BE); không phục vụ đối tác.</li><li><code>common-lib</code> — trace context (W3C), hằng số MDC, DTO lỗi dùng chung.</li></ul>
+<h2>1.2. Vì sao chia như vậy (lý do kiến trúc)</h2>
+<table><thead><tr><th>Quyết định</th><th>Lý do</th><th>Đánh đổi</th></tr></thead><tbody><tr><td><strong>Tách đọc/ghi (CQRS-light)</strong></td><td>Đường đọc chiếm ~95% tải của catalog 3rd-party; tách giúp scale đọc độc lập, tinh chỉnh cache/pool riêng</td><td>Hai entity cùng map 1 bảng — phải giữ đồng bộ</td></tr><tr><td><strong>Gateway reactive, service servlet</strong></td><td>Gateway I/O-bound (fan-out, chờ downstream) hợp reactive; service nghiệp vụ viết kiểu blocking dễ bảo trì, đã có virtual threads gánh đồng thời</td><td>Hai mô hình lập trình khác nhau</td></tr><tr><td><strong>Cache 2 tầng (Caffeine + Redis)</strong></td><td>L1 in-process = 0 network, ~ns; L2 Redis chia sẻ giữa các pod, sống sót khi pod restart</td><td>Phải tự xử lý nhất quán giữa 2 tầng</td></tr><tr><td><strong>Vô hiệu hóa cache theo SỰ KIỆN (Kafka)</strong></td><td>TTL thuần thì dữ liệu cũ tồn tại tới hết TTL; event evict đúng key ngay sau ghi</td><td>Phụ thuộc Kafka (đã fail-open)</td></tr><tr><td><strong>Phát event SAU khi commit</strong></td><td>Không bao giờ evict cache cho 1 giao dịch bị rollback</td><td>Có cửa sổ rất ngắn cache cũ giữa commit và event</td></tr><tr><td><strong>Xác thực đối tác bằng API key tại gateway</strong></td><td>Sub-ms, tra hash trong snapshot in-memory, không gọi mạng; thu hồi tức thì bằng xóa/đổi key trong DB</td><td>Stateful (cần nạp/cache); auth fail-closed khi DB config sập</td></tr><tr><td><strong>Rate-limit động theo đối tác</strong></td><td>Mỗi đối tác khai TPS riêng; chặn tĩnh theo API là bất hợp lý</td><td>Gateway phụ thuộc DB để nạp cấu hình (đã fail-safe)</td></tr></tbody></table>
+<h2>1.3. Ba trụ cột "chịu lỗi" (resilience) — điểm cốt lõi để bảo vệ</h2>
+<ol><li><strong>Fail-open ở tầng cache:</strong> mọi thao tác Redis bọc try/catch, lỗi → rơi xuống DB. Redis chết → vẫn phục vụ, chỉ chậm hơn. Readiness probe chỉ phụ thuộc <code>db,ping</code> nên Redis/Kafka degrade KHÔNG làm pod un-ready.</li><li><strong>Fail-open ở rate-limit:</strong> Redis lỗi → cho request qua thay vì biến rate-limit thành điểm chết toàn cục.</li><li><strong>Fail-safe ở nạp cấu hình:</strong> DB lỗi lúc refresh → giữ snapshot cũ; DB lỗi lúc khởi động (<code>initialization-fail-timeout:-1</code>) → gateway vẫn lên, dùng giới hạn mặc định.</li></ol>
+<p>→ <strong>Không một node hạ tầng đơn lẻ nào (Redis/Kafka/DB-config) làm sập nền tảng.</strong></p>
+<h2>1.4. Chống 3 chế độ hỏng kinh điển của cache</h2>
+<ul><li><strong>Avalanche (đổ tuyết):</strong> mỗi TTL Redis = base + jitter ngẫu nhiên → hàng triệu key không hết hạn cùng lúc.</li><li><strong>Penetration (xuyên cache):</strong> id không tồn tại được cache bằng <code>__NULL__</code> (TTL ngắn) → id rác không đấm vào DB.</li><li><strong>Breakdown/outage:</strong> fail-open xuống DB như trên.</li></ul>
+<h2>1.5. Đã best-practice chưa? (đánh giá thẳng thắn)</h2>
+<p><strong>✅ Đã đạt:</strong></p>
+<ul><li>12-factor config (toàn bộ qua env/ConfigMap/Secret), không hardcode secret.</li><li>Stateless service → scale ngang được, có HPA.</li><li>Health probe tách readiness/liveness, readiness không phụ thuộc dependency không thiết yếu.</li><li>Distributed tracing W3C chuẩn, log JSON có traceId xuyên Kafka.</li><li>Circuit breaker + retry + timeout ở ranh giới mạng.</li><li>Pool DB sizing có chủ đích (read 40 + write 20 &lt; max_connections).</li><li>Rate-limit động, hash-tag key sẵn sàng Redis Cluster, idempotent consumer.</li></ul>
+<p><strong>⚠️ Chưa đạt / còn nợ (cho production):</strong></p>
+<ul><li><strong>Tầng data single-node</strong> (MariaDB/Redis/Kafka 1 node) — chưa HA. *Đây là việc hạ tầng ngoài, không phải sửa code.*</li><li><strong>Schema bằng <code>schema.sql</code> mount-init</strong>, chưa có Flyway/Liquibase → dễ lệch môi trường.</li><li><strong>Secrets là <code>.env</code> demo</strong> — production cần Vault/Sealed-Secrets + xoay creds.</li><li><strong>Chưa có CI/CD, chưa load-test</strong> để có số sizing thật.</li><li><strong>Spring CacheManager <code>l1Products/l1Offers</code> đang không dùng</strong> → <code>cache_gets_total</code> của Micrometer = 0 (hit/miss thật nằm ở Caffeine tự quản, chưa bind MeterRegistry).</li><li>ES observability single-node, chưa retention/ILM, chưa alerting.</li></ul>
+<p><strong>Kết luận mục 1:</strong> Kiến trúc *ứng dụng* đã theo best-practice (resilient, observable, scalable, 12-factor). Khoảng trống còn lại nằm ở *hạ tầng vận hành* (HA, secrets, CI/CD, sizing) — phần lớn là cấu hình/hạ tầng ngoài, xử lý ở giai đoạn production mà không phải viết lại code (xem <code>LO-TRINH-TRIEN-KHAI-THEO-GIAI-DOAN.md</code>).</p>
+<hr>
+<h1>PHẦN 2 — Giải thích chi tiết code từng thành phần hạ tầng</h1>
+<blockquote>Chỉ tập trung các thành phần *làm nên tính hạ tầng* của nền tảng. Phần entity/DTO/CRUD<br>thuần xem <code>GIAI-THICH-CHI-TIET-CODE-JAVA.md</code>.</blockquote>
+<h2>2.1. Trace Context tại Gateway — <code>TraceContextGlobalFilter</code></h2>
+<p>Filter chạy <strong>đầu tiên</strong> (<code>HIGHEST_PRECEDENCE</code>) để mọi log sau đó có traceId.</p>
+<pre><code class="language-java">String traceparent = request.getHeaders().getFirst(MdcConstants.W3C_TRACEPARENT);
+String traceId = TraceContext.extractTraceId(traceparent);   // lấy từ traceparent đối tác gửi
+if (traceId == null) traceId = TraceContext.newTraceId();     // không có → tạo UUID-v4
+spanId = TraceContext.newSpanId();                            // gateway luôn mở span MỚI cho hop downstream</code></pre>
+<ul><li>Nếu đối tác gửi <code>traceparent</code> (W3C) → <strong>nối tiếp</strong> trace của họ; nếu không → sinh trace mới.</li><li><code>request.mutate().header(...)</code> chèn <code>X-Trace-Id/X-Span-Id/traceparent</code> xuống downstream để service servlet hydrate lại MDC.</li><li><code>exchange.getAttributes().put(MDC_TRACE_ID, traceId)</code> lưu lại để <code>ApiKeyAuthFilter</code> trả vào body lỗi 401.</li><li><code>MDC.put(...)</code> để log JSON của chính gateway mang traceId; <code>.doFinally(... MDC.clear())</code> <strong>bắt buộc</strong> vì luồng reactive dùng lại thread — không clear sẽ rò trace sang request khác.</li></ul>
+<h2>2.2. Xác thực ĐỐI TÁC tại Gateway — <code>ApiKeyAuthFilter</code></h2>
+<blockquote>Đối tác xác thực bằng cặp <strong>(X-Client-Id, X-Api-Key)</strong> ngay tại gateway — <strong>KHÔNG gọi<br>integration-service</strong>. (FE/người dùng nội bộ dùng đường auth riêng, xem mục 2.2b.)</blockquote>
+<p><code>getOrder() = HIGHEST_PRECEDENCE + 10</code> → chạy ngay sau trace filter, trước định tuyến.</p>
+<pre><code class="language-java">if (isPermitAll(path)) return chain.filter(exchange);                    // health/metrics/fallback bỏ qua
+String clientId = ...getFirst("X-Client-Id");
+String apiKey   = ...getFirst("X-Api-Key");
+if (clientId/apiKey rỗng) return unauthorized(...);                      // thiếu → 401
+if (!partnerRegistry.authenticate(clientId, apiKey)) return unauthorized(...); // sai/treo → 401
+// hợp lệ: chuẩn hóa X-Client-Id (tin cậy) + XÓA X-Api-Key khỏi request downstream
+request.mutate().header("X-Client-Id", clientId).headers(h -&gt; h.remove("X-Api-Key"))...</code></pre>
+<p><strong><code>authenticate(clientId, rawApiKey)</code></strong> trong <code>PartnerRateLimitConfigService</code>:</p>
+<ul><li>Tra <code>partner</code> theo <code>clientId</code> trong <strong>snapshot in-memory</strong> (cùng nguồn nạp với rate-limit, không chạm DB trên hot path).</li><li>Tính <strong>SHA-256(rawApiKey)</strong> rồi so khớp với <code>api_key_hash</code> đã lưu, <strong>so sánh hằng thời gian</strong> (<code>MessageDigest.isEqual</code>) → chống timing attack.</li><li>Đối tác lạ / chưa cấu hình key / <code>SUSPENDED</code> → <code>false</code> → 401.</li></ul>
+<p><strong>Vì sao an toàn:</strong> API key chứng minh quyền sở hữu <code>client_id</code>, nên sau bước này <code>X-Client-Id</code> là <strong>tin cậy</strong> → mục 2.4 dùng nó làm khóa rate-limit không sợ giả mạo. <code>api_key_hash</code> (không phải key thô) lưu trong DB → DB leak cũng không lộ key.</p>
+<p><strong>Fail-closed (đúng bản chất auth):</strong> nếu DB config sập lúc khởi động → snapshot rỗng → đối tác bị 401. Auth <strong>không thể</strong> fail-open như rate-limit; vì vậy gateway <code>depends_on mariadb healthy</code>.</p>
+<h2>2.2b. Xác thực NỘI BỘ — <code>integration-service</code></h2>
+<p>Đối tác đã tách khỏi đây. <code>integration-service</code> giờ verify <strong>JWT của người dùng nội bộ</strong> (FE quản trị ↔ BE) bằng RSA public key (từ IdP/SSO nội bộ); không còn introspection nhà cung cấp đối tác. Định hướng production: tích hợp IdP có sẵn (Keycloak/AD/LDAP) + RBAC theo vai trò cho đường ghi.</p>
+<h2>2.3. Nguồn cấu hình rate-limit — <code>PartnerRateLimitConfigService</code></h2>
+<p>Đây là phần "load cấu hình động từ DB/Cache". <strong>Tách hẳn việc đọc DB ra khỏi hot path.</strong></p>
+<pre><code class="language-java">private volatile Map&lt;String, PartnerConfig&gt; snapshot = Map.of();  // đọc lock-free</code></pre>
+<ul><li><code>volatile</code> + thay nguyên cụm: request đọc snapshot không cần khóa; refresh dựng map mới rồi gán đè 1 lần.</li></ul>
+<pre><code class="language-java">@Scheduled(fixedDelayString = "${gateway.rate-limit.refresh-ms:15000}")
+public void refresh() { ... }       // 15s/lần nạp lại từ DB
+@PostConstruct public void init() { refresh(); }  // nạp ngay khi khởi động</code></pre>
+<p>3 truy vấn dựng snapshot: (1) <code>rate_limit_tier</code>, (2) <code>partner_rate_limit</code> <strong>chỉ bản đang hiệu lực</strong> (<code>enabled=1</code> và trong <code>valid_from..valid_to</code>), (3) <code>partner</code> + tier. Lỗi DB → <code>catch</code> giữ snapshot cũ (<strong>fail-safe</strong>).</p>
+<p><strong><code>resolve(partnerCode, routeId)</code> — thứ tự ưu tiên (cụ thể thắng):</strong></p>
+<pre><code class="language-java">if (pc == null) return systemDefault();                  // đối tác lạ
+if (SUSPENDED) return BLOCKED;                            // treo → rate 0
+Limit byApi = overrides.get(routeId);  if (byApi!=null) return byApi;      // 1. override theo API
+Limit byDefault = overrides.get("DEFAULT"); if(...) return byDefault;      // 2. override chung đối tác
+if (tierLimit != null) return tierLimit;                                   // 3. theo gói (tier)
+return systemDefault();                                                    // 4. mặc định hệ thống</code></pre>
+<p>Toàn bộ chỉ tra <code>Map</code> in-memory → <strong>an toàn gọi trên event-loop của WebFlux</strong>.</p>
+<h2>2.4. Bộ giới hạn — <code>PartnerRateLimiter</code> + Lua token bucket</h2>
+<p><code>@Component("partnerRateLimiter") implements RateLimiter&lt;Config&gt;</code> để Spring Cloud Gateway gọi qua YAML <code>rate-limiter: "#{@partnerRateLimiter}"</code>.</p>
+<pre><code class="language-java">public Mono&lt;Response&gt; isAllowed(String routeId, String id) {   // id = clientId từ KeyResolver
+    Limit limit = configService.resolve(id, routeId);          // hạn mức riêng đối tác (in-memory)
+    if (limit.replenishRate() &lt;= 0)                            // đối tác treo
+        return Mono.just(new Response(false, headers(limit, 0)));
+    ...
+    return redis.execute(script, keys, args).next()            // token bucket ATOMIC trong Redis
+        .map(result -&gt; new Response(toLong(result.get(0))==1L, headers(...)))
+        .onErrorResume(e -&gt; Mono.just(new Response(true, ...)));// Redis lỗi → FAIL-OPEN cho qua
+}</code></pre>
+<p><strong>Khóa Redis có hash-tag:</strong></p>
+<pre><code class="language-java">String prefix = "rate_limit.{" + partnerKey + ":" + routeId + "}";  // {…} ép cùng slot trên Cluster
+return List.of(prefix + ".tokens", prefix + ".timestamp");</code></pre>
+<p>→ Mỗi (đối tác, route) một xô token độc lập. Vì xô nằm ở <strong>Redis chung</strong>, mọi replica gateway dùng chung 1 trạng thái → giới hạn đúng tổng dù scale nhiều pod.</p>
+<p><strong>Lua token bucket (<code>RateLimiterConfig.TOKEN_BUCKET_LUA</code>)</strong> chạy nguyên tử trong Redis:</p>
+<pre><code class="language-lua">filled_tokens = min(capacity, last_tokens + (now-last_refreshed)*rate)  -- nạp lại theo thời gian trôi
+allowed = filled_tokens &gt;= requested
+if allowed then new_tokens = filled_tokens - requested end
+setex(tokens_key, ttl, new_tokens); setex(timestamp_key, ttl, now)
+return { allowed_num, new_tokens }</code></pre>
+<ul><li><code>rate</code> = TPS ổn định (đổ token/giây); <code>capacity</code> = burst (đỉnh ngắn). Tham số <strong>theo đối tác</strong>, khác hẳn <code>RedisRateLimiter</code> mặc định (tham số tĩnh theo route trong YAML).</li><li>Nguyên tử ⇒ nhiều pod gọi đồng thời không bị đếm sai (race).</li><li>Trả header <code>X-RateLimit-Remaining / Replenish-Rate / Burst-Capacity / Policy-Source</code> để đối tác tự điều tiết và để debug biết hạn mức đến từ nguồn nào (tier/override/default).</li></ul>
+<h2>2.5. Cache 2 tầng — <code>TwoLevelCacheService</code> (trái tim đường đọc)</h2>
+<pre><code class="language-java">public &lt;T&gt; T get(String namespace, String key, Class&lt;T&gt; type, Supplier&lt;T&gt; loader) {
+    String cacheKey = namespace + ":" + key;
+    Object l1 = this.l1.getIfPresent(cacheKey);  if (l1!=null) return unwrap(l1,type);  // L1 Caffeine
+    Object l2 = safeRedisGet(cacheKey);                                                  // L2 Redis (fail-open)
+    if (l2!=null) { this.l1.put(cacheKey,l2); return unwrap(l2,type); }                  // back-fill L1
+    T loaded = loader.get();                                                             // DB
+    if (loaded==null) { l1.put(cacheKey,NULL_MARKER); safeRedisPut(cacheKey,NULL_MARKER,nullTtl); return null; }
+    l1.put(cacheKey,loaded); safeRedisPut(cacheKey,loaded, randomizedTtl()); return loaded;
+}</code></pre>
+<ul><li><strong>L1 Caffeine</strong> tự quản (không dùng Spring CacheManager) để toàn quyền điều phối L1↔L2 và null-marker: <code>maximumSize(100k)</code>, <code>expireAfterWrite(30s)</code>, <code>recordStats()</code>.</li><li><strong><code>safeRedisGet/safeRedisPut</code></strong> bọc try/catch → Redis chết thì log + rơi xuống DB (<strong>fail-open</strong>).</li><li><strong><code>randomizedTtl()</code> = base + jitter</strong> → chống avalanche. <strong><code>NULL_MARKER</code></strong> → chống penetration.</li><li><strong><code>unwrap</code></strong>: Redis trả JSON của record (final class) về dạng <code>Map</code> (vì <code>GenericJackson2JsonRedisSerializer</code> không nhúng type cho final class) → <code>objectMapper.convertValue(value, type)</code> ép kiểu lại. *Giữ fallback này nếu sửa serialization.*</li><li><strong><code>evict(namespace,key)</code></strong> xóa cả 2 tầng — gọi bởi consumer Kafka bên dưới.</li></ul>
+<h2>2.6. Vô hiệu hóa cache hướng sự kiện</h2>
+<p><strong>Bên ghi — <code>ProductManagementService.publishAfterCommit</code>:</strong></p>
+<pre><code class="language-java">if (TransactionSynchronizationManager.isSynchronizationActive()) {
+    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+        public void afterCommit() { eventPublisher.publish(event); }   // CHỈ phát SAU khi commit
+    });
+} else { eventPublisher.publish(event); }</code></pre>
+<p>→ Nếu giao dịch rollback, event <strong>không</strong> được phát → catalog không bao giờ evict nhầm cho 1 thay đổi bị hủy.</p>
+<p><strong>Bên đọc — <code>CatalogChangeConsumer.onCatalogChange</code>:</strong></p>
+<pre><code class="language-java">restoreTraceContext(record);                       // khôi phục traceId/clientId từ Kafka header → MDC
+...
+cache.evict(namespace, event.entityId());          // xóa đúng 1 key ở cả 2 tầng
+ack.acknowledge();                                 // chỉ commit offset SAU khi xử lý xong (at-least-once)</code></pre>
+<ul><li><code>restoreTraceContext</code> lấy traceId từ <strong>Kafka record header</strong> → dòng log "Evicted cache ..." truy ngược được về request ghi gốc trên Kibana.</li><li><code>ack.acknowledge()</code> sau xử lý → an toàn nếu pod chết giữa chừng (xử lý lại; evict idempotent nên lặp không hại).</li><li><code>MDC.clear()</code> trong <code>finally</code> chống rò trace giữa các message.</li></ul>
+<h2>2.7. <code>common-lib</code> — vì sao tách riêng</h2>
+<p><code>TraceContext</code> (parse/sinh <code>traceparent</code> W3C) và <code>MdcConstants</code> (tên khóa MDC / HTTP header / Kafka header <strong>chuẩn hóa một chỗ</strong>). Đổi tên khóa ở đây, không sửa rải rác từng service → tránh lệch header làm đứt correlation.</p>
+<hr>
+<h1>PHẦN 3 — Kế hoạch triển khai K8s môi trường test (kèm CI/CD)</h1>
+<h2>3.1. Cụm test bằng kind (Kubernetes-in-Docker)</h2>
+<p>Đã có sẵn manifest trong <code>k8s/test/</code>:</p>
+<ul><li><code>00-namespace-config.yaml</code> — namespace <code>bccs</code> + ConfigMap/Secret.</li><li><code>10-infra.yaml</code> — MariaDB, Redis, Kafka (KRaft, <code>KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093</code> để né deadlock endpoint khi pod chưa Ready).</li><li><code>20-services.yaml</code> — 4 service + Service + (HPA per service trong <code>&lt;svc&gt;/k8s/hpa.yaml</code>).</li></ul>
+<p><strong>Quy trình dựng:</strong></p>
+<pre><code class="language-bash">kind create cluster --name bccs-test
+kind load docker-image &lt;image&gt;:&lt;tag&gt; --name bccs-test   # nạp image build local vào cụm
+kubectl apply -f k8s/test/00-namespace-config.yaml
+kubectl apply -f k8s/test/10-infra.yaml
+kubectl -n bccs rollout status deploy/mariadb deploy/redis deploy/kafka
+kubectl apply -f k8s/test/20-services.yaml
+kubectl -n bccs get pods         # chờ 7/7 Running</code></pre>
+<p><strong>Lưu ý kind ≠ k8s thật:</strong> không có LoadBalancer thật, storageClass khác, networking khác → cụm test chỉ chứng minh *logic*, không chứng minh chịu tải/HA.</p>
+<h2>3.2. Giám sát trỏ vào cụm test</h2>
+<p><code>k8s/monitoring/</code>: <code>10-prometheus-grafana.yaml</code>, <code>20-elk.yaml</code> (ES+Kibana+Filebeat), <code>30-apm.yaml</code> (<code>wait_for_integration:false</code>). Truy cập qua <code>kubectl -n monitoring port-forward</code> (Grafana 3000, Kibana 5601, Prometheus 9090) — mỗi lệnh giữ 1 terminal sống.</p>
+<h2>3.3. CI/CD — kế hoạch (chưa có, cần bổ sung)</h2>
+<p><strong>Pipeline mục tiêu (GitHub Actions ví dụ):</strong></p>
+<pre><code>push/PR ─▶ [CI]  build (container Java 21) ─▶ mvn test ─▶ build image ─▶ Trivy scan
+                                                                   │
+   main  ─▶ [CD]  push image (tag = git SHA) ─▶ apply/argo sync ─▶ rollout status ─▶ smoke test</code></pre>
+<p><strong>Nguyên tắc bắt buộc:</strong></p>
+<ul><li>Build trong <strong>container Java 21</strong> (host JDK 17 không compile được — xem CLAUDE.md).</li><li><strong>Tag image theo git SHA</strong>, không <code>:latest</code> → rollback xác định.</li><li><strong>Scan image</strong> (Trivy) chặn merge nếu có CVE nghiêm trọng.</li><li>CD nên <strong>GitOps</strong> (ArgoCD/Flux): Git là nguồn sự thật, mọi thay đổi cluster có audit + rollback.</li></ul>
+<p><strong>Khung <code>.github/workflows/ci.yaml</code> (mẫu rút gọn):</strong></p>
+<pre><code class="language-yaml">jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    container: maven:3.9-eclipse-temurin-21
+    steps:
+      - uses: actions/checkout@v4
+      - run: mvn -B -pl common-lib,&lt;service&gt; -am test
+  image:
+    needs: build-test
+    steps:
+      - run: docker build -f &lt;service&gt;/Dockerfile -t $REGISTRY/&lt;service&gt;:${GITHUB_SHA} .
+      - run: trivy image --exit-code 1 --severity CRITICAL $REGISTRY/&lt;service&gt;:${GITHUB_SHA}
+      - run: docker push $REGISTRY/&lt;service&gt;:${GITHUB_SHA}
+  deploy:                       # chỉ nhánh main
+    steps:
+      - run: kubectl set image deploy/&lt;service&gt; &lt;service&gt;=$REGISTRY/&lt;service&gt;:${GITHUB_SHA} -n bccs
+      - run: kubectl rollout status deploy/&lt;service&gt; -n bccs --timeout=120s</code></pre>
+<p><strong>Khác biệt test vs prod trong CD:</strong> test có thể <code>kubectl set image</code> trực tiếp; prod nên qua GitOps + duyệt (approval) + canary/blue-green.</p>
+<hr>
+<h1>PHẦN 4 — Kế hoạch sizing &amp; test tải (hướng dẫn từng bước)</h1>
+<blockquote>Mục tiêu: từ con số đo thực, suy ra cần bao nhiêu pod / CPU / RAM / pool để chịu tải mục tiêu<br>(~hàng triệu request/ngày). <strong>Không đoán — đo rồi mới cấu hình.</strong></blockquote>
+<h2>4.1. Khái niệm nền (đọc trước khi đo)</h2>
+<ul><li><strong>Định luật Little:</strong> <code>concurrency = throughput × latency</code>. Ví dụ muốn 2000 req/s ở p95 = 50ms → đồng thời ≈ 100 request đang xử lý. Đây là cơ sở để chọn pool/thread.</li><li><strong>Quy đổi tải:</strong> "1 triệu req/ngày" rất thấp nếu trải đều (~12 req/s), nhưng đỉnh giờ cao điểm có thể gấp 5–10 lần trung bình → <strong>luôn sizing theo PEAK, không theo trung bình.</strong></li><li><strong>Chỉ số phải đo:</strong> throughput (req/s) tối đa trước khi p95 vọt; p50/p95/p99 latency; tỉ lệ lỗi; CPU/RAM mỗi pod ở mức tải đó; cache hit ratio; mức bão hòa DB pool.</li></ul>
+<h2>4.2. Chuẩn bị môi trường đo</h2>
+<ul><li>Đo trên cụm <strong>giống prod nhất có thể</strong> (kind không đại diện về tài nguyên — chỉ dùng để dựng kịch bản).</li><li>Tải dữ liệu thật/giả đủ lớn (vài chục nghìn product/offer) để cache không "ăn may" 100% hit.</li><li>Bật sẵn observability (Prometheus/Grafana) để xem CPU, GC, pool, latency <strong>trong lúc bắn</strong>.</li><li><strong>Tắt rate-limit hoặc nâng hạn mức INTERNAL</strong> cho client test, nếu không bạn đang đo rate-limit chứ không đo năng lực service.</li></ul>
+<h2>4.3. Công cụ — dùng k6 (gọn, kịch bản bằng JS)</h2>
+<p>Cài: <code>choco install k6</code> (Windows) hoặc <code>docker run grafana/k6</code>.</p>
+<p><strong>Kịch bản tăng dần để tìm điểm gãy (<code>load-test.js</code>):</strong></p>
+<pre><code class="language-javascript">import http from 'k6/http';
+import { check } from 'k6';
+
+export const options = {
+  stages: [
+    { duration: '1m', target: 50 },    // khởi động
+    { duration: '2m', target: 200 },   // tăng
+    { duration: '2m', target: 500 },   // tăng tiếp
+    { duration: '2m', target: 1000 },  // ép tải
+    { duration: '1m', target: 0 },     // hạ
+  ],
+  thresholds: {
+    http_req_duration: ['p(95)&lt;200', 'p(99)&lt;500'],  // SLO: p95&lt;200ms, p99&lt;500ms
+    http_req_failed: ['rate&lt;0.01'],                  // lỗi &lt;1%
+  },
+};
+
+export default function () {
+  const res = http.get('http://&lt;gateway-host&gt;:8080/api/v1/products/PROD-001', {
+    headers: { 'X-Client-Id': __ENV.CLIENT_ID, 'X-Api-Key': __ENV.API_KEY },
+  });
+  check(res, { 'status 200': (r) =&gt; r.status === 200 });
+}</code></pre>
+<p>Chạy: <code>k6 run -e CLIENT_ID=PARTNER_GOLD -e API_KEY=bccs_ak_gold_demo load-test.js</code><br>(dùng đối tác hạn mức cao như GOLD/INTERNAL để đo năng lực service, không bị rate-limit chặn sớm)</p>
+<h2>4.4. Quy trình đo (4 bước)</h2>
+<ol><li><strong>Baseline 1 pod:</strong> scale service về 1 replica, bắn k6 tăng dần. Ghi lại <strong>throughput tối đa của 1 pod</strong> tại điểm p95 bắt đầu vọt và <strong>CPU/RAM</strong> lúc đó. Đây là "đơn vị năng lực".</li><li><strong>Tìm nút thắt:</strong> khi p95 vọt, nhìn Grafana xem ai bão hòa trước — CPU pod? DB pool cạn (active = max)? Redis? GC? → chỉnh đúng chỗ đó (tăng pool, tăng CPU limit, tăng cache TTL...).</li><li><strong>Kiểm chứng scale ngang:</strong> tăng lên 3–5 pod, bắn lại. Throughput có tăng gần tuyến tính không? Nếu không → nút thắt đã dời xuống DB/Redis (tầng data cần HA/scale).</li><li><strong>Suy ra sizing:</strong> <code>số pod = ceil(throughput_đỉnh_mục_tiêu / throughput_1_pod) × hệ_số_an_toàn(1.5–2)</code>. Đặt <code>requests</code> = mức dùng ổn định, <code>limits</code> = đỉnh; cấu hình HPA <code>targetCPU</code> ~ 60–70% để còn dư đầu khi scale.</li></ol>
+<h2>4.5. Áp số đo vào cấu hình</h2>
+<ul><li><code>resources.requests/limits</code> mỗi pod ← CPU/RAM đo ở bước 1.</li><li><code>HPA minReplicas/maxReplicas/targetCPU</code> ← bước 4.</li><li>HikariCP pool ← bước 2 (đừng để tổng pool &gt; <code>max_connections</code> MariaDB).</li><li>Cache TTL/<code>maximumSize</code> ← cân theo hit ratio quan sát được.</li><li>Ghi lại thành <strong>bảng sizing</strong> kèm điều kiện đo (ngày, dữ liệu, phần cứng) để bảo vệ trước hội đồng.</li></ul>
+<h2>4.6. Các loại test nên chạy</h2>
+<table><thead><tr><th>Loại</th><th>Mục đích</th></tr></thead><tbody><tr><td><strong>Load</strong> (tăng dần)</td><td>Tìm throughput tối đa &amp; điểm p95 gãy</td></tr><tr><td><strong>Stress</strong> (vượt ngưỡng)</td><td>Xem hệ thống xuống cấp có "duyên" không (429/503 sạch hay sập)</td></tr><tr><td><strong>Soak</strong> (giữ tải vừa 1–2h)</td><td>Phát hiện rò bộ nhớ, GC dài, pool rò</td></tr><tr><td><strong>Spike</strong> (nhảy đột ngột)</td><td>Kiểm chứng HPA kịp scale &amp; circuit breaker</td></tr></tbody></table>
+<hr>
+<h1>PHẦN 5 — Kế hoạch deploy production</h1>
+<h2>5.1. Tiền đề (phải xong trước go-live)</h2>
+<ul><li><input type="checkbox" disabled> Đã có <strong>CI/CD</strong> (Phần 3) và <strong>số sizing thật</strong> (Phần 4).</li><li><input type="checkbox" disabled> <strong>Migration schema</strong> chuyển sang Flyway/Liquibase (bỏ <code>schema.sql</code> mount-init).</li><li><input type="checkbox" disabled> <strong>Secrets</strong> chuyển sang Vault/Sealed-Secrets; <strong>xoay toàn bộ creds demo</strong>.</li></ul>
+<h2>5.2. Hạ tầng production (chủ yếu là hạ tầng ngoài, ít đụng code)</h2>
+<p><strong>Tầng data — HA (HA ≠ backup):</strong></p>
+<ul><li>MariaDB: Galera multi-master hoặc primary-replica (hoặc managed DB). Đổi connection string, không đổi code.</li><li>Redis: Sentinel hoặc Cluster (key rate-limit/cache đã có hash-tag sẵn sàng Cluster).</li><li>Kafka: ≥3 broker, replication-factor=3, min-ISR=2.</li></ul>
+<p><strong>Tầng mạng/vào:</strong></p>
+<ul><li>Ingress + TLS (cert-manager), LB (mềm/cứng — xem doc HA), tùy chọn WAF trước gateway.</li><li>Gateway ≥2 replica sau LB (đã stateless).</li></ul>
+<p><strong>Vận hành:</strong></p>
+<ul><li>Alerting (Alertmanager): p99 latency, tỉ lệ 5xx, spike 429, pod restart, Kafka lag, độ trễ replica DB, đầy disk ES.</li><li>ES cluster + retention/ILM cho log.</li><li>Backup DB hằng ngày (<code>scripts/db-backup/</code>) + <strong>test restore định kỳ</strong> (backup chưa test = chưa có backup).</li></ul>
+<h2>5.3. Cụm K8s production</h2>
+<ul><li>≥3 worker, <strong>multi-AZ</strong>; <code>topologySpreadConstraints</code> để pod trải đều AZ.</li><li><code>PodDisruptionBudget</code> để nâng cấp node không hạ quá nhiều replica cùng lúc.</li><li><code>requests/limits</code> + HPA theo số sizing; ResourceQuota/LimitRange cho namespace.</li><li>NetworkPolicy hạn chế lưu lượng đông-tây.</li></ul>
+<h2>5.4. Chiến lược phát hành</h2>
+<ul><li><strong>Rolling update</strong> mặc định (đã có readiness probe → không nhận traffic khi chưa sẵn sàng).</li><li>Với thay đổi rủi ro cao: <strong>canary</strong> hoặc <strong>blue-green</strong> + smoke test tự động, rollback bằng tag SHA cũ.</li><li>Migration DB <strong>tương thích ngược</strong> (expand/contract) để rolling update không vỡ schema.</li></ul>
+<h2>5.5. Checklist go-live (tóm tắt)</h2>
+<ul><li><input type="checkbox" disabled> HA đủ 3 tầng data, đã thử kill-node thấy tự lành.</li><li><input type="checkbox" disabled> Secrets thật + đã xoay creds demo.</li><li><input type="checkbox" disabled> CI/CD chạy, rollback thử thành công.</li><li><input type="checkbox" disabled> Sizing từ load-test, HPA cấu hình theo số đo.</li><li><input type="checkbox" disabled> Alerting + dashboard + log retention bật.</li><li><input type="checkbox" disabled> Backup + <strong>restore đã test</strong>.</li><li><input type="checkbox" disabled> Runbook sự cố (Redis down, DB failover, Kafka lag, gateway 5xx) viết sẵn.</li></ul>
+<blockquote>Chi tiết theo giai đoạn &amp; checklist tick được: <code>LO-TRINH-TRIEN-KHAI-THEO-GIAI-DOAN.md</code>.<br>Chi tiết HA/LB/sizing đã thảo luận: <code>KE-HOACH-HA-TANG-PRODUCTION.md</code>, <code>TONG-HOP-THAO-LUAN-HATANG.txt</code>.</blockquote>
+</body>
+</html>

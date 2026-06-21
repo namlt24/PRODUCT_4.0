@@ -106,7 +106,7 @@ spanId = TraceContext.newSpanId();                            // gateway luôn m
 ```
 - Nếu đối tác gửi `traceparent` (W3C) → **nối tiếp** trace của họ; nếu không → sinh trace mới.
 - `request.mutate().header(...)` chèn `X-Trace-Id/X-Span-Id/traceparent` xuống downstream để service servlet hydrate lại MDC.
-- `exchange.getAttributes().put(MDC_TRACE_ID, traceId)` lưu lại để AuthenticationFilter trả vào body lỗi 401.
+- `exchange.getAttributes().put(MDC_TRACE_ID, traceId)` lưu lại để `ApiKeyAuthFilter` trả vào body lỗi 401.
 - `MDC.put(...)` để log JSON của chính gateway mang traceId; `.doFinally(... MDC.clear())` **bắt buộc** vì luồng reactive dùng lại thread — không clear sẽ rò trace sang request khác.
 
 ## 2.2. Xác thực ĐỐI TÁC tại Gateway — `ApiKeyAuthFilter`
@@ -357,12 +357,13 @@ export const options = {
 
 export default function () {
   const res = http.get('http://<gateway-host>:8080/api/v1/products/PROD-001', {
-    headers: { Authorization: `Bearer ${__ENV.TOKEN}` },
+    headers: { 'X-Client-Id': __ENV.CLIENT_ID, 'X-Api-Key': __ENV.API_KEY },
   });
   check(res, { 'status 200': (r) => r.status === 200 });
 }
 ```
-Chạy: `k6 run -e TOKEN=<jwt> load-test.js`
+Chạy: `k6 run -e CLIENT_ID=PARTNER_GOLD -e API_KEY=bccs_ak_gold_demo load-test.js`
+(dùng đối tác hạn mức cao như GOLD/INTERNAL để đo năng lực service, không bị rate-limit chặn sớm)
 
 ## 4.4. Quy trình đo (4 bước)
 
