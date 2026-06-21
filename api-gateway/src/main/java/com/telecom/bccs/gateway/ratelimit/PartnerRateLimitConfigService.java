@@ -7,7 +7,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.HashMap;
+import java.util.HexFormat;
 import java.util.Map;
 
 /**
@@ -43,7 +47,8 @@ public class PartnerRateLimitConfigService {
     /** Hạn mức đã giải quyết cho 1 (đối tác, route). */
     public record Limit(int replenishRate, int burstCapacity, int requestedTokens, String source) {}
 
-    private record PartnerConfig(String status, Limit tierLimit, Map<String, Limit> overrides) {}
+    private record PartnerConfig(String status, Limit tierLimit, Map<String, Limit> overrides,
+                                 String apiKeyHash) {}
 
     public Limit systemDefault() {
         return new Limit(props.getDefaultReplenishRate(), props.getDefaultBurstCapacity(),
@@ -52,6 +57,37 @@ public class PartnerRateLimitConfigService {
 
     /** Hạn mức "chặn" cho đối tác bị treo. */
     private static final Limit BLOCKED = new Limit(0, 0, 1, "suspended");
+
+    /**
+     * XÁC THỰC đối tác bằng cặp (client_id, API_KEY thô). Thuần in-memory, an toàn trên event-loop.
+     * So khớp SHA-256(rawApiKey) với api_key_hash đã nạp; so sánh HẰNG THỜI GIAN (chống timing attack).
+     * Đối tác lạ / chưa cấu hình key / đang SUSPENDED → false.
+     */
+    public boolean authenticate(String partnerCode, String rawApiKey) {
+        if (partnerCode == null || rawApiKey == null || rawApiKey.isBlank()) {
+            return false;
+        }
+        PartnerConfig pc = snapshot.get(partnerCode);
+        if (pc == null || pc.apiKeyHash() == null || pc.apiKeyHash().isBlank()) {
+            return false;
+        }
+        if ("SUSPENDED".equalsIgnoreCase(pc.status())) {
+            return false;
+        }
+        byte[] expected = pc.apiKeyHash().toLowerCase().getBytes(StandardCharsets.UTF_8);
+        byte[] actual = sha256Hex(rawApiKey).getBytes(StandardCharsets.UTF_8);
+        return MessageDigest.isEqual(expected, actual);
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e); // không xảy ra trên JVM chuẩn
+        }
+    }
 
     /**
      * Tra hạn mức cho đối tác trên một route. Thuần in-memory, an toàn gọi trên event-loop.
@@ -105,17 +141,18 @@ public class PartnerRateLimitConfigService {
                                 "partner:" + rs.getString("partner_code") + ":" + rs.getString("api_scope")));
             });
 
-            // 3) Đối tác + tier
+            // 3) Đối tác + tier + hash API key (để xác thực)
             Map<String, PartnerConfig> next = new HashMap<>();
-            jdbc.query("SELECT code, status, tier_code FROM partner", rs -> {
+            jdbc.query("SELECT code, status, tier_code, api_key_hash FROM partner", rs -> {
                 String code = rs.getString("code");
                 next.put(code, new PartnerConfig(
                         rs.getString("status"),
                         tiers.get(rs.getString("tier_code")),
-                        overrides.getOrDefault(code, Map.of())));
+                        overrides.getOrDefault(code, Map.of()),
+                        rs.getString("api_key_hash")));
             });
-            // Đối tác có override nhưng không có bản ghi partner (đề phòng) vẫn được nạp
-            overrides.forEach((code, ov) -> next.putIfAbsent(code, new PartnerConfig("ACTIVE", null, ov)));
+            // Đối tác có override nhưng không có bản ghi partner (đề phòng) vẫn được nạp (không có key → không auth được)
+            overrides.forEach((code, ov) -> next.putIfAbsent(code, new PartnerConfig("ACTIVE", null, ov, null)));
 
             this.snapshot = next;
             log.debug("Rate-limit config refreshed: {} partners, {} tiers", next.size(), tiers.size());

@@ -9,8 +9,8 @@ import reactor.core.publisher.Mono;
  * BƯỚC 1 — Custom KeyResolver nhận diện ĐỐI TÁC.
  *
  * <p>Khóa rate-limit = mã đối tác (clientId) lấy từ header {@code X-Client-Id} mà
- * {@code AuthenticationFilter} đã trích từ JWT đã xác thực (claim {@code client_id}/{@code azp}).
- * Vì lấy từ token đã ký, đối tác KHÔNG thể giả mạo clientId để "mượn" hạn mức của bên khác.
+ * {@code ApiKeyAuthFilter} đã xác thực (đối tác phải có API_KEY khớp client_id mới qua được).
+ * Vì đã qua xác thực API key, đối tác KHÔNG thể giả mạo clientId để "mượn" hạn mức của bên khác.
  *
  * <p>Mỗi đối tác có một "xô token" riêng → một đối tác quét ồ ạt không ảnh hưởng hạn mức của
  * đối tác khác. Nếu request chưa xác thực (chưa có clientId) thì rơi về địa chỉ IP để vẫn chặn.

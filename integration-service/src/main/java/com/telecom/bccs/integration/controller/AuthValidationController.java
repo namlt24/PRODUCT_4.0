@@ -10,8 +10,9 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
- * Endpoint invoked by the API gateway when it cannot validate a token locally. Returns an
- * OAuth2-introspection-style body the gateway uses to allow/deny the request.
+ * Endpoint xác thực token cho NGƯỜI DÙNG NỘI BỘ (FE quản trị ↔ BE). Trả về body kiểu
+ * OAuth2-introspection để bên gọi (admin gateway/BFF) cho phép/từ chối request.
+ * Đối tác bên thứ 3 không dùng endpoint này (họ xác thực bằng API key tại gateway).
  */
 @RestController
 @RequestMapping("/api/v1/integration")

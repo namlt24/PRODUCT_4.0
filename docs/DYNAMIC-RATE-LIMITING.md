@@ -12,8 +12,8 @@
 ## 1. Ý TƯỞNG & LUỒNG TỔNG QUAN
 
 ```
-Đối tác --(JWT)--> [api-gateway]
-   AuthenticationFilter  → trích client_id từ JWT → header X-Client-Id
+Đối tác --(X-Client-Id + X-Api-Key)--> [api-gateway]
+   ApiKeyAuthFilter  → so khớp SHA-256(API_KEY) với api_key_hash → X-Client-Id tin cậy
         │
    RequestRateLimiter filter (mỗi route):
      ① PartnerKeyResolver   → khóa = clientId (đối tác)
@@ -39,7 +39,7 @@ Hai điểm cốt lõi:
 | Bảng | Vai trò |
 |---|---|
 | `rate_limit_tier` | Hạn mức **mặc định theo gói** (BRONZE/SILVER/GOLD/INTERNAL) |
-| `partner` | Đối tác (`code` = `client_id` trong JWT) + `status` + `tier_code` |
+| `partner` | Đối tác (`code` = `client_id`) + `status` + `tier_code` + `api_key_hash` (SHA-256 để xác thực) |
 | `partner_rate_limit` | **Override** theo từng đối tác, có thể theo từng **api_scope** (routeId) + thời hạn + audit |
 
 **Thứ tự ưu tiên khi tra hạn mức (cụ thể thắng):**
@@ -83,8 +83,9 @@ public class PartnerKeyResolver implements KeyResolver {
     }
 }
 ```
-- Khóa rate-limit = **clientId** lấy từ header `X-Client-Id` mà `AuthenticationFilter` đã trích từ
-  **JWT đã ký** (claim `client_id`/`azp`) → đối tác **không giả mạo** được để mượn hạn mức bên khác.
+- Khóa rate-limit = **clientId** lấy từ header `X-Client-Id` mà `ApiKeyAuthFilter` đã **xác thực bằng
+  API key** (đối tác phải có `X-Api-Key` khớp `api_key_hash` của chính client_id đó) → **không giả mạo**
+  được để mượn hạn mức bên khác.
 - Mỗi clientId → một "xô token" riêng. Request chưa xác thực → giới hạn theo IP.
 - Bean được tham chiếu trong YAML: `key-resolver: "#{@partnerKeyResolver}"`.
 
@@ -178,17 +179,18 @@ gateway.rate-limit:
 ## 6. CÁCH TEST
 
 ```bash
-# Cần token có client_id (đặt JWT_PUBLIC_KEY cho gateway + dùng token PARTNER_A — xem demo-bearer-token)
+# Xác thực bằng API key: header X-Client-Id + X-Api-Key (key demo trong schema.sql)
 # Bắn vượt rate trên route catalog của PARTNER_A (override 300/600) → cuối cùng nhận HTTP 429
 for i in $(seq 1 800); do
-  curl -s -o /dev/null -w "%{http_code} " -H "Authorization: Bearer <PARTNER_A_TOKEN>" \
+  curl -s -o /dev/null -w "%{http_code} " \
+    -H "X-Client-Id: PARTNER_A" -H "X-Api-Key: bccs_ak_partnerA_demo" \
     http://localhost:8080/api/v1/products/<id>
 done; echo
 # Kỳ vọng: phần lớn 200, khi cạn xô token → 429. Header X-RateLimit-Remaining giảm dần.
 # Đổi DB rồi chờ 15s, bắn lại → hạn mức mới có hiệu lực (không restart).
 ```
-Kiểm chứng **độc lập theo đối tác**: bắn đồng thời PARTNER_A (cao) và PARTNER_B (thấp) → B bị 429
-sớm hơn A dù cùng gọi 1 API.
+Kiểm chứng **độc lập theo đối tác**: bắn đồng thời PARTNER_A (key A) và PARTNER_B (key B, hạn mức thấp)
+→ B bị 429 sớm hơn A dù cùng gọi 1 API. Sai/thiếu API key → 401 (chưa tính rate-limit).
 
 ---
 

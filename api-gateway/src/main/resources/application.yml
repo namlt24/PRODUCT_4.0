@@ -96,20 +96,10 @@ spring:
                 name: integrationCircuitBreaker
                 fallbackUri: forward:/fallback/integration
 
-# ---- Resilience4j: protect the call into the 3rd-party auth provider ----
+# ---- Resilience4j: bảo vệ các lời gọi downstream ----
 resilience4j:
   circuitbreaker:
     instances:
-      authProvider:
-        sliding-window-type: COUNT_BASED
-        sliding-window-size: 20
-        minimum-number-of-calls: 10
-        failure-rate-threshold: 50
-        slow-call-rate-threshold: 80
-        slow-call-duration-threshold: 2s
-        wait-duration-in-open-state: 10s
-        permitted-number-of-calls-in-half-open-state: 5
-        automatic-transition-from-open-to-half-open-enabled: true
       catalogCircuitBreaker:
         sliding-window-size: 30
         failure-rate-threshold: 50
@@ -122,18 +112,12 @@ resilience4j:
         sliding-window-size: 20
         failure-rate-threshold: 50
         wait-duration-in-open-state: 5s
-  timelimiter:
-    instances:
-      authProvider:
-        timeout-duration: 2s
 
 # ---- Auth configuration (no secrets hardcoded) ----
 gateway:
   auth:
-    # PEM body (base64) of the RSA public key for in-memory JWT validation
-    jwt-public-key: ${JWT_PUBLIC_KEY:}
-    # Fallback introspection endpoint exposed by integration-service
-    introspection-uri: ${INTROSPECTION_URI:http://integration-service:8083/api/v1/integration/validate}
+    # Đối tác xác thực bằng (X-Client-Id, X-Api-Key) tại gateway (ApiKeyAuthFilter), so khớp với
+    # api_key_hash nạp từ bảng partner. Không còn JWT/introspection cho đối tác.
     # Paths that bypass authentication (comma-separated; bound to List<String> via @Value)
     permit-all: /actuator/health,/actuator/health/**,/actuator/prometheus,/fallback/**
 

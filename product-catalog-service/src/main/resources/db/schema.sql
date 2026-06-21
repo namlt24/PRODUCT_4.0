@@ -45,15 +45,18 @@ CREATE TABLE IF NOT EXISTS rate_limit_tier (
     CONSTRAINT chk_tier_rate CHECK (replenish_rate >= 0 AND burst_capacity >= replenish_rate)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- Đối tác bên thứ 3. code = client_id trong JWT.
+-- Đối tác bên thứ 3. code = client_id (định danh). api_key_hash = bí mật để XÁC THỰC.
+-- Gateway xác thực đối tác bằng cặp (X-Client-Id, X-Api-Key): tra partner theo code rồi
+-- so khớp SHA-256(X-Api-Key) với api_key_hash (so sánh hằng thời gian). KHÔNG gọi integration-service.
 CREATE TABLE IF NOT EXISTS partner (
-    id          VARCHAR(64)  NOT NULL,
-    code        VARCHAR(64)  NOT NULL,                       -- = client_id (claim JWT)
-    name        VARCHAR(255) NOT NULL,
-    status      VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',      -- ACTIVE/SUSPENDED
-    tier_code   VARCHAR(32)  NOT NULL,
-    created_at  TIMESTAMP    NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  TIMESTAMP    NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    id            VARCHAR(64)  NOT NULL,
+    code          VARCHAR(64)  NOT NULL,                     -- = client_id (định danh đối tác)
+    name          VARCHAR(255) NOT NULL,
+    status        VARCHAR(16)  NOT NULL DEFAULT 'ACTIVE',    -- ACTIVE/SUSPENDED
+    tier_code     VARCHAR(32)  NOT NULL,
+    api_key_hash  CHAR(64),                                  -- SHA-256 hex của API_KEY (KHÔNG lưu key thô)
+    created_at    TIMESTAMP    NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TIMESTAMP    NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_partner_code (code),
     KEY idx_partner_status (status),
@@ -88,12 +91,15 @@ INSERT INTO rate_limit_tier (tier_code, replenish_rate, burst_capacity, requeste
     ('INTERNAL', 2000, 4000, 1, 'Hệ thống nội bộ')
 ON DUPLICATE KEY UPDATE replenish_rate=VALUES(replenish_rate), burst_capacity=VALUES(burst_capacity);
 
-INSERT INTO partner (id, code, name, status, tier_code) VALUES
-    ('p-001', 'PARTNER_A',    'Đối tác A (demo JWT)', 'ACTIVE',    'SILVER'),
-    ('p-002', 'PARTNER_B',    'Đối tác B',            'ACTIVE',    'BRONZE'),
-    ('p-003', 'PARTNER_GOLD', 'Đối tác VIP',          'ACTIVE',    'GOLD'),
-    ('p-004', 'PARTNER_X',    'Đối tác bị treo',      'SUSPENDED', 'BRONZE')
-ON DUPLICATE KEY UPDATE name=VALUES(name);
+-- api_key_hash = SHA-256(API_KEY thô). Key thô CHỈ giao cho đối tác 1 lần, không lưu ở đây.
+-- Key demo (để test): PARTNER_A=bccs_ak_partnerA_demo · PARTNER_B=bccs_ak_partnerB_demo
+--                     PARTNER_GOLD=bccs_ak_gold_demo  · PARTNER_X=bccs_ak_x_demo (đang treo)
+INSERT INTO partner (id, code, name, status, tier_code, api_key_hash) VALUES
+    ('p-001', 'PARTNER_A',    'Đối tác A',       'ACTIVE',    'SILVER', '5280a9c4de2a8893b88b7ee9000e80de7c572a54cbfd8f27c9862e0d423534d8'),
+    ('p-002', 'PARTNER_B',    'Đối tác B',       'ACTIVE',    'BRONZE', '1e23c7eb6c27dbdb413009ea0a85e8466cd8677b0cd833545163b25dc04bf00f'),
+    ('p-003', 'PARTNER_GOLD', 'Đối tác VIP',     'ACTIVE',    'GOLD',   '7aa991311ec32034207ebcfa13657fb241a730e08e7fd9e980b52ef6bc266e71'),
+    ('p-004', 'PARTNER_X',    'Đối tác bị treo', 'SUSPENDED', 'BRONZE', '6be48b07e67ed7825b54673449fcab50e73707096586617c2079350ead327312')
+ON DUPLICATE KEY UPDATE name=VALUES(name), api_key_hash=VALUES(api_key_hash);
 
 -- PARTNER_A: đọc catalog được nâng riêng (override theo API), ghi quản lý hạ thấp
 INSERT INTO partner_rate_limit (partner_code, api_scope, replenish_rate, burst_capacity, updated_by) VALUES

@@ -1,6 +1,5 @@
 package com.telecom.bccs.integration.service;
 
-import com.telecom.bccs.integration.client.ThirdPartyAuthClient;
 import com.telecom.bccs.integration.model.TokenValidationResult;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
@@ -17,29 +16,31 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 
 /**
- * Validates JWTs. Prefers fast local asymmetric verification with the cached RSA public key;
- * falls back to remote introspection at the 3rd-party provider when no key is configured or
- * when the token signature cannot be verified locally (e.g. opaque/reference tokens).
+ * Xác thực JWT cho NGƯỜI DÙNG NỘI BỘ (FE quản trị ↔ BE). Đối tác bên thứ 3 KHÔNG còn dùng
+ * service này — họ xác thực bằng API key tại gateway.
+ *
+ * <p>Verify cục bộ bằng RSA public key (lấy từ IdP nội bộ/SSO). Token không hợp lệ → inactive;
+ * KHÔNG còn fallback introspection sang nhà cung cấp đối tác.
+ *
+ * <p>Định hướng production: đứng trước/tích hợp một IdP có sẵn (Keycloak/AD/LDAP/SSO) để phát và
+ * xoay khóa, và bổ sung RBAC theo vai trò (vd CATALOG_ADMIN) cho đường ghi.
  */
 @Service
 public class TokenValidationService {
 
     private static final Logger log = LoggerFactory.getLogger(TokenValidationService.class);
 
-    private final ThirdPartyAuthClient thirdPartyAuthClient;
     private final String base64PublicKey;
     private PublicKey publicKey;
 
-    public TokenValidationService(ThirdPartyAuthClient thirdPartyAuthClient,
-                                  @Value("${integration.auth.jwt-public-key:}") String base64PublicKey) {
-        this.thirdPartyAuthClient = thirdPartyAuthClient;
+    public TokenValidationService(@Value("${integration.auth.jwt-public-key:}") String base64PublicKey) {
         this.base64PublicKey = base64PublicKey;
     }
 
     @PostConstruct
     void init() {
         if (base64PublicKey == null || base64PublicKey.isBlank()) {
-            log.warn("No JWT public key set; will rely on remote introspection only");
+            log.warn("No JWT public key set; internal token validation will reject all tokens until configured");
             return;
         }
         try {
@@ -49,33 +50,33 @@ public class TokenValidationService {
                     .replaceAll("\\s", "");
             byte[] der = Base64.getDecoder().decode(cleaned);
             this.publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(der));
-            log.info("Loaded RSA public key for local JWT validation");
+            log.info("Loaded RSA public key for internal JWT validation");
         } catch (Exception e) {
             log.error("Could not parse JWT public key: {}", e.getMessage());
         }
     }
 
     public TokenValidationResult validate(String token) {
-        if (publicKey != null) {
-            try {
-                Claims claims = Jwts.parser()
-                        .verifyWith(publicKey)
-                        .clockSkewSeconds(30)
-                        .build()
-                        .parseSignedClaims(token)
-                        .getPayload();
-                String clientId = claims.get("client_id", String.class);
-                if (clientId == null) {
-                    clientId = claims.get("azp", String.class);
-                }
-                Long exp = claims.getExpiration() != null ? claims.getExpiration().toInstant().getEpochSecond() : null;
-                return TokenValidationResult.active(claims.getSubject(),
-                        clientId != null ? clientId : "unknown", exp);
-            } catch (JwtException e) {
-                log.debug("Local JWT validation failed, falling back to introspection: {}", e.getMessage());
-                // fall through to remote
-            }
+        if (publicKey == null) {
+            return TokenValidationResult.inactive("no_validation_key_configured");
         }
-        return thirdPartyAuthClient.introspect(token);
+        try {
+            Claims claims = Jwts.parser()
+                    .verifyWith(publicKey)
+                    .clockSkewSeconds(30)
+                    .build()
+                    .parseSignedClaims(token)
+                    .getPayload();
+            String clientId = claims.get("client_id", String.class);
+            if (clientId == null) {
+                clientId = claims.get("azp", String.class);
+            }
+            Long exp = claims.getExpiration() != null ? claims.getExpiration().toInstant().getEpochSecond() : null;
+            return TokenValidationResult.active(claims.getSubject(),
+                    clientId != null ? clientId : "unknown", exp);
+        } catch (JwtException e) {
+            log.debug("Internal JWT validation failed: {}", e.getMessage());
+            return TokenValidationResult.inactive("invalid_token");
+        }
     }
 }
