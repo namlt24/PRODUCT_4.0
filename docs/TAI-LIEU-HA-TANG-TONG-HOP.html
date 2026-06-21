@@ -249,7 +249,7 @@ export default function () {
 <p><strong>Tầng data — HA (HA ≠ backup):</strong></p>
 <ul><li>MariaDB: Galera multi-master hoặc primary-replica (hoặc managed DB). Đổi connection string, không đổi code.</li><li>Redis: Sentinel hoặc Cluster (key rate-limit/cache đã có hash-tag sẵn sàng Cluster).</li><li>Kafka: ≥3 broker, replication-factor=3, min-ISR=2.</li></ul>
 <p><strong>Tầng mạng/vào:</strong></p>
-<ul><li>Ingress + TLS (cert-manager), LB (mềm/cứng — xem doc HA), tùy chọn WAF trước gateway.</li><li>Gateway ≥2 replica sau LB (đã stateless).</li></ul>
+<ul><li>Ingress + TLS (cert-manager), LB (mềm/cứng — <strong>chi tiết ở mục 5.6</strong>), tùy chọn WAF trước gateway.</li><li>Gateway ≥2 replica sau LB (đã stateless).</li></ul>
 <p><strong>Vận hành:</strong></p>
 <ul><li>Alerting (Alertmanager): p99 latency, tỉ lệ 5xx, spike 429, pod restart, Kafka lag, độ trễ replica DB, đầy disk ES.</li><li>ES cluster + retention/ILM cho log.</li><li>Backup DB hằng ngày (<code>scripts/db-backup/</code>) + <strong>test restore định kỳ</strong> (backup chưa test = chưa có backup).</li></ul>
 <h2>5.3. Cụm K8s production</h2>
@@ -258,6 +258,61 @@ export default function () {
 <ul><li><strong>Rolling update</strong> mặc định (đã có readiness probe → không nhận traffic khi chưa sẵn sàng).</li><li>Với thay đổi rủi ro cao: <strong>canary</strong> hoặc <strong>blue-green</strong> + smoke test tự động, rollback bằng tag SHA cũ.</li><li>Migration DB <strong>tương thích ngược</strong> (expand/contract) để rolling update không vỡ schema.</li></ul>
 <h2>5.5. Checklist go-live (tóm tắt)</h2>
 <ul><li><input type="checkbox" disabled> HA đủ 3 tầng data, đã thử kill-node thấy tự lành.</li><li><input type="checkbox" disabled> Secrets thật + đã xoay creds demo.</li><li><input type="checkbox" disabled> CI/CD chạy, rollback thử thành công.</li><li><input type="checkbox" disabled> Sizing từ load-test, HPA cấu hình theo số đo.</li><li><input type="checkbox" disabled> Alerting + dashboard + log retention bật.</li><li><input type="checkbox" disabled> Backup + <strong>restore đã test</strong>.</li><li><input type="checkbox" disabled> Runbook sự cố (Redis down, DB failover, Kafka lag, gateway 5xx) viết sẵn.</li></ul>
+<h2>5.6. Lớp Load Balancer (nginx) trước cụm Gateway</h2>
+<p>Mô hình mục tiêu: <strong>đối tác gọi vào MỘT điểm vào duy nhất (LB), LB chia tải cho cụm Gateway,<br>Gateway định tuyến xuống service.</strong></p>
+<pre><code>Đối tác ──DNS──▶ [ LB: nginx ] ◀── TLS kết thúc ở đây
+                      │  L7, round-robin, health-check
+                      ▼
+            ┌──────────────────────────┐
+            │  CỤM API GATEWAY (N pod)  │  ← stateless, ≥2 bản
+            └────────────┬─────────────┘
+                         │ auth API key + rate-limit chạy ở đây
+                         ▼
+            K8s Service (LB nội bộ) ──▶ catalog / management / integration (mỗi loại N pod)</code></pre>
+<h3>Vì sao cần LB — tại sao Gateway KHÔNG tự làm LB cho chính nó</h3>
+<p>Gateway có cân bằng tải, nhưng theo chiều <strong>đi xuống service</strong>. Việc chia request <strong>từ đối tác VÀO<br>các gateway pod</strong> phải xảy ra <strong>trước khi</strong> chạm bất kỳ gateway nào → không gateway nào tự làm được:</p>
+<ul><li><strong>Con gà–quả trứng:</strong> để HA cần N gateway pod; đối tác cần 1 địa chỉ; ai chọn pod-1 hay pod-2? Quyết định đó nằm <strong>ngoài</strong> mọi gateway.</li><li><strong>IP pod đổi liên tục</strong> (restart/reschedule) → cần điểm vào ổn định (VIP/DNS) đứng trước.</li><li><strong>Failover:</strong> LB qua health-check tự loại pod chết; gateway đang chết không tự báo client "đừng gọi tôi".</li><li><strong>Phân lớp:</strong> LB đơn giản → cực bền; gateway phức tạp (auth/rate-limit) → được phép scale/restart.</li></ul>
+<h3>Hai tầng cân bằng tải (đừng nhầm)</h3>
+<ol><li><strong>nginx LB</strong> → chia request cho các <strong>pod gateway</strong>.</li><li><strong>K8s Service</strong> → gateway gọi xuống downstream, Service tự chia cho các <strong>pod service</strong>.</li></ol>
+<h3>⚠️ LB phải tự HA — "1 con nginx" = SPOF mới</h3>
+<p>Một nginx duy nhất chết → sập toàn hệ dù gateway HA. Ba cách làm LB không-chết:</p>
+<table><thead><tr><th>Cách</th><th>Mô tả</th><th>Khi nào</th></tr></thead><tbody><tr><td><strong>2 nginx + VIP (keepalived)</strong></td><td>active-passive, chung 1 IP ảo</td><td>tự dựng trên VM/bare-metal</td></tr><tr><td><strong>nginx sau LB cloud/phần cứng</strong></td><td>Cloud LB (hoặc F5) trước 2+ nginx</td><td>có hạ tầng cloud/DC</td></tr><tr><td><strong>ingress-nginx trong K8s</strong></td><td>chính là nginx, ≥2 replica, sau 1 Service LoadBalancer</td><td><strong>khuyến nghị khi đã ở K8s</strong></td></tr></tbody></table>
+<blockquote>Trong K8s, "con nginx làm LB" thường <strong>chính là ingress-nginx controller</strong> — không cần dựng nginx riêng bên ngoài.</blockquote>
+<h3>LB cấu hình gì</h3>
+<ul><li><strong>TLS termination</strong> tại LB (HTTPS vào, HTTP/mTLS phía trong).</li><li><strong>Health check</strong> → chỉ route tới gateway pod <code>/actuator/health</code> OK.</li><li><strong>KHÔNG cần sticky session</strong>: gateway stateless → round-robin thoải mái.</li><li><strong>Timeout/limit kết nối</strong> ở LB để chắn quá tải sớm. <strong>Không</strong> đặt auth/rate-limit ở LB (để ở gateway).</li></ul>
+<h3>Vì sao rate-limit vẫn đúng khi Gateway thành CỤM</h3>
+<p>Token bucket nằm ở <strong>Redis chung</strong> (key hash-tag), nên dù LB rải request cho N gateway pod, hạn mức<br>một đối tác vẫn <strong>đúng tổng</strong> — không nhân N. (Nếu để rate-limit cục bộ từng pod thì sẽ ×N → sai.)</p>
+<h3>Triển khai trên cụm test (kind) — mô phỏng đúng mô hình</h3>
+<pre><code class="language-bash"># 1) Cài ingress-nginx (lớp "nginx LB", chạy nhiều replica)
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=180s
+
+# 2) Nâng api-gateway thành CỤM (≥2 pod)
+kubectl -n bccs scale deploy/api-gateway --replicas=2</code></pre>
+<pre><code class="language-yaml"># 3) Ingress: đối tác gọi host → Service api-gateway (ingress tự chia cho 2 gateway pod)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bccs-gateway
+  namespace: bccs
+  annotations:
+    nginx.ingress.kubernetes.io/load-balance: "round_robin"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.bccs.local            # trỏ DNS/hosts của đối tác vào đây
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port: { number: 8080 }</code></pre>
+<p>Kết quả: <code>Đối tác → ingress-nginx (LB) → cụm gateway (2 pod) → service</code> — đúng mô hình mục tiêu.</p>
+<h3>Production</h3>
+<ul><li>ingress-nginx ≥2 replica <strong>sau</strong> một Service <code>LoadBalancer</code> (cloud LB) — hoặc 2 nginx + keepalived nếu on-prem.</li><li>TLS bằng cert-manager; bật rate-limit/timeout mức LB như tuyến phòng thủ đầu; tách path đối tác (external) và admin/FE (internal) bằng host/Ingress riêng.</li></ul>
+<hr>
 <blockquote>Chi tiết theo giai đoạn &amp; checklist tick được: <code>LO-TRINH-TRIEN-KHAI-THEO-GIAI-DOAN.md</code>.<br>Chi tiết HA/LB/sizing đã thảo luận: <code>KE-HOACH-HA-TANG-PRODUCTION.md</code>, <code>TONG-HOP-THAO-LUAN-HATANG.txt</code>.</blockquote>
 </body>
 </html>
