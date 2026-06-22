@@ -3,6 +3,7 @@ package com.telecom.bccs.gateway.ratelimit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.ratelimit.RateLimiter;
+import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
@@ -26,6 +27,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Khác với {@code RedisRateLimiter} mặc định (tham số tĩnh theo route trong YAML), ở đây tham số
  * lấy động theo đối tác. Redis lỗi → <b>fail-open</b> (cho qua) để không tự biến rate-limit thành SPOF.
  */
+// @Primary: Spring Cloud Gateway tự tạo sẵn 'redisRateLimiter'; đánh dấu bean này là mặc định để
+// RequestRateLimiterGatewayFilterFactory tiêm đúng 1 RateLimiter (tránh lỗi "2 beans found").
+@Primary
 @Component("partnerRateLimiter")
 public class PartnerRateLimiter implements RateLimiter<PartnerRateLimiter.Config> {
 

@@ -1,0 +1,14 @@
+# Trỏ tên "mariadb" (mà các app dùng qua DB_HOST) tới MariaDB NGOÀI cụm.
+# MariaDB chạy bằng Docker trên máy, GẮN VÀO mạng "kind" với container name "bccs-mariadb-ext"
+# (xem scripts/external-db/). CoreDNS của kind forward query ra Docker DNS → phân giải được tên này.
+#
+# Nếu pod KHÔNG phân giải được tên container (tùy môi trường), dùng cách IP tĩnh ở cuối README
+# (Service headless + EndpointSlice trỏ IP container).
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: bccs
+spec:
+  type: ExternalName
+  externalName: bccs-mariadb-ext

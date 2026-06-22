@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chạy thử toàn bộ dự án trên K8s (kind) + DB ngoài — Báo cáo chi tiết</title>
+<style>
+  :root { --fg:#1f2328; --muted:#57606a; --border:#d0d7de; --bg:#fff; --code-bg:#f6f8fa; --accent:#0969da; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:var(--fg);
+         background:var(--bg); line-height:1.6; max-width:920px; margin:0 auto; padding:48px 24px; }
+  h1,h2,h3,h4 { line-height:1.25; margin-top:1.6em; margin-bottom:.5em; font-weight:600; }
+  h1 { font-size:1.9em; border-bottom:2px solid var(--border); padding-bottom:.3em; }
+  h2 { font-size:1.45em; border-bottom:1px solid var(--border); padding-bottom:.25em; }
+  h3 { font-size:1.2em; } h4 { font-size:1.05em; }
+  p { margin:.6em 0; }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  code { background:var(--code-bg); padding:.15em .4em; border-radius:6px; font-size:.88em;
+         font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
+  pre { background:var(--code-bg); border:1px solid var(--border); border-radius:8px;
+        padding:14px 16px; overflow:auto; font-size:.85em; }
+  pre code { background:none; padding:0; }
+  blockquote { border-left:4px solid var(--accent); margin:1em 0; padding:.4em 1em;
+               background:#f6f8fa; color:var(--muted); border-radius:0 6px 6px 0; }
+  table { border-collapse:collapse; width:100%; margin:1em 0; font-size:.92em; }
+  th,td { border:1px solid var(--border); padding:8px 12px; text-align:left; vertical-align:top; }
+  th { background:var(--code-bg); font-weight:600; }
+  tr:nth-child(even) td { background:#fafbfc; }
+  hr { border:none; border-top:1px solid var(--border); margin:2em 0; }
+  ul,ol { padding-left:1.6em; } li { margin:.25em 0; }
+  input[type=checkbox] { margin-right:.4em; }
+  @media print { body { padding:0; max-width:none; } pre,table { page-break-inside:avoid; } a { color:var(--fg); } }
+</style>
+</head>
+<body>
+<h1>Chạy thử toàn bộ dự án trên K8s (kind) + DB ngoài — Báo cáo chi tiết</h1>
+<blockquote>Ghi lại <strong>đúng những gì đã thực hiện</strong> khi triển khai và kiểm thử toàn bộ hệ thống trên cụm<br>kind <code>bccs-test</code>, với <strong>MariaDB tách ra ngoài cụm</strong> (chạy bằng Docker trên máy). Kèm giải thích<br><strong>từng cấu hình</strong> và <strong>kết quả test thực tế</strong>.</blockquote>
+<p>Ngày chạy: 2026-06-22 · Cụm: <code>kind-bccs-test</code> (1 node) · DB: container <code>bccs-mariadb-ext</code> (ngoài cụm).</p>
+<hr>
+<h2>1. Kết quả tổng quan (PASS)</h2>
+<table><thead><tr><th>Hạng mục</th><th>Kết quả</th></tr></thead><tbody><tr><td>6 pod (gateway, catalog, management, integration, redis, kafka)</td><td>✅ Running 1/1</td></tr><tr><td>App trong kind ↔ <strong>MariaDB ngoài</strong></td><td>✅ <code>health.db = UP (MariaDB)</code>, dữ liệu nằm trong container ngoài</td></tr><tr><td>Xác thực API key (đúng / sai / thiếu / treo)</td><td>✅ 200 / 401 / 401 / 401</td></tr><tr><td>Rate-limit động theo đối tác (header + 429)</td><td>✅ override 300/600, tier 40, 429 khi bắn đồng thời</td></tr><tr><td>Vô hiệu hóa cache qua Kafka (update → đọc lại thấy mới)</td><td>✅ phản ánh trong cửa sổ TTL</td></tr><tr><td>Sự cố phát hiện &amp; sửa</td><td>✅ xung đột bean <code>RateLimiter</code> (đã <code>@Primary</code>)</td></tr><tr><td>Tồn đọng</td><td>⚠️ log app không hiện trên stdout (lỗi logback JSON_CONSOLE — observability)</td></tr></tbody></table>
+<hr>
+<h2>2. Kiến trúc đã chạy</h2>
+<pre><code>                 port-forward 8080
+   curl  ────────────────────────▶ api-gateway (pod) ──auth API key──▶ rate-limit (Redis)
+                                          │ X-Client-Id + X-Api-Key            │
+                                          ▼                                    ▼
+                            product-catalog / product-management        [redis pod]
+                                          │  JDBC (DB_HOST=mariadb)
+                                          ▼
+                          Service "mariadb" (ExternalName) ──▶ container bccs-mariadb-ext
+                                                                (Docker trên máy, mạng "kind")
+        management ──(Kafka catalog.changes)──▶ catalog evict cache   [kafka pod]</code></pre>
+<hr>
+<h2>3. Các bước đã thực hiện (kèm giải thích lệnh)</h2>
+<h3>3.1. Kiểm tra môi trường</h3>
+<pre><code class="language-bash">docker version          # 28.1.1 đang chạy
+kind get clusters       # bccs-test (đã có sẵn)
+kubectl config current-context   # kind-bccs-test
+kubectl get nodes       # bccs-test-control-plane Ready
+kubectl get ns bccs     # NotFound -&gt; sạch, deploy mới
+docker network ls | grep kind    # mạng "kind" tồn tại</code></pre>
+<h3>3.2. Build + nạp image vào kind</h3>
+<pre><code class="language-bash">docker compose build api-gateway product-catalog-service \
+  product-management-service integration-service          # build trong Docker (Java 21)
+for img in api-gateway product-catalog-service product-management-service integration-service; do
+  kind load docker-image bccs-product-catalog-$img:latest --name bccs-test   # nạp vào node kind
+done</code></pre>
+<ul><li><code>kind load</code> cần thiết vì cụm kind không tự thấy image trên Docker host. Manifest để</li></ul>
+<p><code>imagePullPolicy: IfNotPresent</code> nên dùng image local vừa nạp, không pull registry.</p>
+<h3>3.3. Dựng MariaDB NGOÀI cụm (trên máy, gắn mạng kind)</h3>
+<pre><code class="language-bash">cd scripts/external-db &amp;&amp; docker compose up -d
+docker inspect -f '...' bccs-mariadb-ext   # kind=172.20.0.7  (đã ở trên mạng kind)
+docker exec bccs-mariadb-ext mariadb ... -e "SHOW TABLES;"   # 5 bảng đã tạo từ schema.sql</code></pre>
+<ul><li>Container gắn vào <strong>mạng <code>kind</code></strong> để pod gọi tới được; publish cổng host 3307 để dùng tool.</li><li><code>schema.sql</code> mount vào <code>/docker-entrypoint-initdb.d</code> → MariaDB tự tạo bảng lần đầu.</li><li>Kết quả: 5 bảng <code>product, offer, partner, rate_limit_tier, partner_rate_limit</code> + seed 4 đối tác.</li></ul>
+<h3>3.4. Apply manifest K8s theo thứ tự</h3>
+<pre><code class="language-bash">kubectl apply -f k8s/test/00-namespace-config.yaml   # namespace + ConfigMap + Secret (KHÔNG còn schema)
+kubectl apply -f k8s/test/05-external-db.yaml         # Service "mariadb" (ExternalName -&gt; bccs-mariadb-ext)
+kubectl apply -f k8s/test/10-infra.yaml               # CHỈ Redis + Kafka (MariaDB đã tách)
+kubectl -n bccs rollout status deploy/redis deploy/kafka
+kubectl apply -f k8s/test/20-services.yaml            # 4 service ứng dụng</code></pre>
+<h3>3.5. Sự cố &amp; cách sửa (quan trọng)</h3>
+<p><strong>Triệu chứng:</strong> <code>api-gateway</code> CrashLoopBackOff, log chỉ có banner rồi exit 1 (lỗi bị nuốt vì<br>JSON_CONSOLE không in ra). <strong>Cách tìm lỗi:</strong> chạy thẳng image gateway bằng Docker, ép logback<br>console text → lộ stack trace:</p>
+<pre><code>APPLICATION FAILED TO START
+Parameter 0 of method requestRateLimiterGatewayFilterFactory required a single bean,
+but 2 were found: partnerRateLimiter, redisRateLimiter</code></pre>
+<p><strong>Nguyên nhân:</strong> Spring Cloud Gateway tự tạo sẵn bean <code>redisRateLimiter</code>; cộng với<br><code>partnerRateLimiter</code> của ta → factory không biết chọn cái nào.<br><strong>Sửa:</strong> đánh dấu <code>PartnerRateLimiter</code> là <code>@Primary</code> → rebuild → <code>kind load</code> → <code>rollout restart</code>.<br>(Đây là lỗi <strong>runtime wiring</strong>, build không bắt được.)</p>
+<hr>
+<h2>4. Giải thích TỪNG cấu hình</h2>
+<h3>4.1. <code>scripts/external-db/docker-compose.yml</code> (MariaDB ngoài)</h3>
+<table><thead><tr><th>Mục</th><th>Ý nghĩa</th></tr></thead><tbody><tr><td><code>container_name: bccs-mariadb-ext</code></td><td>= <code>externalName</code> trong Service K8s → pod phân giải tới đây</td></tr><tr><td><code>networks: [kind]</code> + <code>networks.kind.external: true</code></td><td>gắn vào mạng kind có sẵn để pod gọi được</td></tr><tr><td><code>ports: 3307:3306</code></td><td>mở cổng host để nối bằng tool (host 3306 thường bận)</td></tr><tr><td>mount <code>schema.sql</code> → <code>/docker-entrypoint-initdb.d</code></td><td>tạo bảng lần đầu (một nguồn schema duy nhất)</td></tr><tr><td><code>MARIADB_USER/PASSWORD</code> = bccs_app/Bccs_App_2026</td><td><strong>phải khớp</strong> Secret <code>bccs-secrets</code> để app nối được</td></tr></tbody></table>
+<h3>4.2. <code>k8s/test/00-namespace-config.yaml</code></h3>
+<ul><li><strong>Namespace <code>bccs</code></strong>: ngăn chứa toàn bộ dự án.</li><li><strong>ConfigMap <code>bccs-config</code></strong>: biến không bí mật. Mấu chốt: <code>DB_HOST: "mariadb"</code> — app gọi tên này,</li></ul>
+<p>được phân giải ra DB ngoài qua Service ExternalName. <code>SPRING_PROFILES_ACTIVE: "local"</code> tắt Logstash.</p>
+<ul><li><strong>Secret <code>bccs-secrets</code></strong>: <code>DB_USER/DB_PASSWORD</code> (khớp DB ngoài), <code>JWT_PUBLIC_KEY</code>, <code>REDIS_PASSWORD</code>.</li><li><strong>ĐÃ GỠ</strong> ConfigMap <code>mariadb-initdb</code> (schema không còn nhúng ở đây → hết cảnh sửa 2 nơi).</li></ul>
+<h3>4.3. <code>k8s/test/05-external-db.yaml</code> (MỚI)</h3>
+<pre><code class="language-yaml">kind: Service
+spec:
+  type: ExternalName
+  externalName: bccs-mariadb-ext</code></pre>
+<ul><li>Service tên <code>mariadb</code> kiểu <strong>ExternalName</strong> → khi pod gọi <code>mariadb:3306</code>, K8s trả về CNAME</li></ul>
+<p><code>bccs-mariadb-ext</code>; CoreDNS của kind forward ra Docker DNS → phân giải IP container trên mạng kind.</p>
+<ul><li>Nhờ vậy <strong>app không phải đổi cấu hình</strong> (vẫn <code>DB_HOST=mariadb</code>) dù DB nằm ngoài.</li></ul>
+<h3>4.4. <code>k8s/test/10-infra.yaml</code></h3>
+<ul><li><strong>CHỈ còn Redis + Kafka</strong> (đã gỡ MariaDB Deployment+Service).</li><li>Kafka KRaft: <code>KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093</code> (tránh deadlock endpoint single-node).</li><li>Mỗi cái có Deployment (giữ pod chạy) + Service (tên DNS nội bộ <code>redis</code>/<code>kafka</code>).</li></ul>
+<h3>4.5. <code>k8s/test/20-services.yaml</code> (4 service app)</h3>
+<ul><li>Mỗi service: <strong>initContainer <code>wait-deps</code></strong> (<code>nc -z</code> chờ mariadb/redis/kafka mở cổng) → JVM mới khởi động.</li></ul>
+<p>*Chính bước này xác nhận pod phân giải được tên <code>mariadb</code> ra DB ngoài (init pass = DNS + cổng OK).*</p>
+<ul><li><code>envFrom</code>: nạp toàn bộ ConfigMap <code>bccs-config</code> + Secret <code>bccs-secrets</code>.</li><li>Probe <code>/actuator/health/readiness</code> + <code>liveness</code>. <code>api-gateway</code> Service kiểu <strong>NodePort 30080</strong>.</li></ul>
+<h3>4.6. Sửa code: <code>PartnerRateLimiter</code> <code>@Primary</code></h3>
+<pre><code class="language-java">@Primary                         // &lt;-- thêm
+@Component("partnerRateLimiter")
+public class PartnerRateLimiter implements RateLimiter&lt;Config&gt; { ... }</code></pre>
+<p>Để <code>RequestRateLimiterGatewayFilterFactory</code> tiêm đúng 1 bean <code>RateLimiter</code> (ưu tiên của ta thay vì<br><code>redisRateLimiter</code> mặc định). Tham chiếu <code>#{@partnerRateLimiter}</code> trong YAML vẫn dùng theo tên.</p>
+<hr>
+<h2>5. Kết quả test thực tế</h2>
+<h3>5.1. Health (app ↔ DB ngoài + Redis)</h3>
+<pre><code>gateway /actuator/health : status UP, db=UP(MariaDB), redis=UP(7.2.14)
+catalog /actuator/health : status UP, db=UP(MariaDB), redis=UP</code></pre>
+<h3>5.2. Xác thực API key (qua gateway, cổng 8080)</h3>
+<table><thead><tr><th>Trường hợp</th><th>Header</th><th>Kết quả</th></tr></thead><tbody><tr><td>Key đúng (PARTNER_A)</td><td><code>X-Client-Id: PARTNER_A</code> + <code>X-Api-Key: bccs_ak_partnerA_demo</code></td><td><strong>200</strong></td></tr><tr><td>Key sai</td><td><code>X-Api-Key: sai_key</code></td><td><strong>401</strong></td></tr><tr><td>Thiếu key</td><td>(chỉ X-Client-Id)</td><td><strong>401</strong></td></tr><tr><td>Đối tác bị treo (PARTNER_X)</td><td>key đúng nhưng status SUSPENDED</td><td><strong>401</strong></td></tr></tbody></table>
+<h3>5.3. Rate-limit động theo đối tác</h3>
+<p>Header thực tế khi đọc bằng PARTNER_A trên route catalog:</p>
+<pre><code>X-RateLimit-Policy-Source: partner:PARTNER_A:product-catalog   &lt;- đúng override theo API
+X-RateLimit-Replenish-Rate: 300
+X-RateLimit-Burst-Capacity: 600
+X-RateLimit-Remaining: 599</code></pre>
+<p>PARTNER_B (không có override catalog → kế thừa tier BRONZE): <code>Policy-Source: tier:BRONZE</code>, rate 20, burst 40.</p>
+<p><strong>Ép 429 bằng 150 request đồng thời (PARTNER_B, burst 40):</strong></p>
+<pre><code>200 = 104   429 = 46   khac = 0</code></pre>
+<p>→ Cho qua ~burst 40 + token nạp thêm trong lúc bắn, phần vượt bị <strong>429</strong>. Đúng thiết kế token bucket.</p>
+<h3>5.4. Vô hiệu hóa cache qua Kafka (end-to-end)</h3>
+<pre><code>B1 đọc lần 1     : name="Goi Data"           (nạp cache)
+B2 update (mgmt) : name="Goi Data DA SUA"    (phát event sau commit)
+B3 đọc lại (3s)  : name="Goi Data DA SUA"    (thấy NGAY giá trị mới)</code></pre>
+<p>L1 Caffeine TTL=30s; đọc lại sau 3s ra giá trị mới ⇒ cache <strong>đã bị evict bởi event</strong>, không phải hết hạn.</p>
+<h3>5.5. Bằng chứng dùng đúng DB NGOÀI</h3>
+<pre><code class="language-sql">-- truy vấn thẳng container bccs-mariadb-ext:
+id                                    code  name
+c8ef992d-...                          P001  Goi Cuoc Test
+c16d74c4-...                          P002  Goi Data DA SUA   &lt;- update đã ghi xuống DB ngoài</code></pre>
+<hr>
+<h2>6. Tồn đọng (cần xử lý tiếp)</h2>
+<p>⚠️ <strong>Log ứng dụng không hiện trên stdout</strong> (<code>kubectl logs</code> chỉ thấy banner). Appender <code>JSON_CONSOLE</code><br>(<code>LoggingEventCompositeJsonEncoder</code>) không phát log ra stdout — nên Filebeat/Kibana cũng sẽ không thu<br>được. <strong>Không ảnh hưởng chức năng</strong> (đã kiểm chứng), nhưng <strong>hỏng observability</strong>. Nghi do<br>logstash-logback-encoder/logback không tương thích hoặc template provider. → Cần sửa logback-spring.xml<br>(vd dùng <code>LogstashEncoder</code> đơn giản hoặc kiểm tra version) rồi rebuild cả 4 image.</p>
+<p>⚠️ Đường ghi (management) hiện vẫn sau gateway/áp rate-limit đối tác — theo thiết kế sẽ tách sang<br>admin gateway/BFF nội bộ (xem <code>XAC-THUC-API-KEY-DOI-TAC.md</code>).</p>
+<hr>
+<h2>7. Chạy lại từ đầu (tóm tắt)</h2>
+<pre><code class="language-bash">kubectl delete namespace bccs                                   # dọn
+cd scripts/external-db &amp;&amp; docker compose up -d &amp;&amp; cd ../..      # DB ngoài
+for img in api-gateway product-catalog-service product-management-service integration-service; do
+  kind load docker-image bccs-product-catalog-$img:latest --name bccs-test; done
+kubectl apply -f k8s/test/00-namespace-config.yaml
+kubectl apply -f k8s/test/05-external-db.yaml
+kubectl apply -f k8s/test/10-infra.yaml
+kubectl -n bccs rollout status deploy/redis deploy/kafka
+kubectl apply -f k8s/test/20-services.yaml
+kubectl -n bccs get pods                                        # chờ 6/6 Running
+kubectl -n bccs port-forward svc/api-gateway 8080:8080          # rồi curl localhost:8080</code></pre>
+</body>
+</html>

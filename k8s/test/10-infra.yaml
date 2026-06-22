@@ -34,62 +34,9 @@ spec:
   selector: { app: redis }
   ports: [{ port: 6379, targetPort: 6379 }]
 ---
-# ---------------- MariaDB (shared schema) ----------------
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mariadb
-  namespace: bccs
-spec:
-  replicas: 1
-  strategy: { type: Recreate }
-  selector:
-    matchLabels: { app: mariadb }
-  template:
-    metadata:
-      labels: { app: mariadb }
-    spec:
-      containers:
-        - name: mariadb
-          image: mariadb:11.3
-          ports: [{ containerPort: 3306 }]
-          env:
-            - name: MARIADB_ROOT_PASSWORD
-              valueFrom: { secretKeyRef: { name: bccs-secrets, key: MARIADB_ROOT_PASSWORD } }
-            - name: MARIADB_DATABASE
-              valueFrom: { configMapKeyRef: { name: bccs-config, key: DB_NAME } }
-            - name: MARIADB_USER
-              valueFrom: { secretKeyRef: { name: bccs-secrets, key: DB_USER } }
-            - name: MARIADB_PASSWORD
-              valueFrom: { secretKeyRef: { name: bccs-secrets, key: DB_PASSWORD } }
-          volumeMounts:
-            - { name: data, mountPath: /var/lib/mysql }
-            - { name: initdb, mountPath: /docker-entrypoint-initdb.d }
-          resources:
-            requests: { cpu: "100m", memory: "256Mi" }
-            limits: { cpu: "1000m", memory: "768Mi" }
-          readinessProbe:
-            exec: { command: ["healthcheck.sh", "--connect", "--innodb_initialized"] }
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 12
-      volumes:
-        - name: data
-          emptyDir: {}
-        - name: initdb
-          configMap: { name: mariadb-initdb }
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mariadb
-  namespace: bccs
-spec:
-  selector: { app: mariadb }
-  ports: [{ port: 3306, targetPort: 3306 }]
----
 # ---------------- Kafka (KRaft, single node) ----------------
+# Lưu ý: MariaDB ĐÃ TÁCH RA NGOÀI cụm (chạy bằng Docker trên máy — xem scripts/external-db/).
+# Service tên "mariadb" được khai báo trong 05-external-db.yaml (ExternalName).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

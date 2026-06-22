@@ -1,0 +1,42 @@
+# MariaDB NGOÀI cụm K8s — chạy bằng Docker trên máy, GẮN VÀO mạng "kind"
+# để các pod trong cụm kind gọi tới được (qua Service ExternalName "mariadb").
+#
+#   cd scripts/external-db
+#   docker compose up -d
+#
+# - Cổng 3307 publish ra host để bạn nối bằng tool (DBeaver...). Host 3306 thường đã bận.
+# - Tài khoản PHẢI khớp Secret bccs-secrets (DB_USER/DB_PASSWORD) để app kết nối được.
+# - schema.sql được mount thẳng từ source (một nguồn duy nhất, không còn bản sao trong ConfigMap).
+name: bccs-external-db
+
+services:
+  mariadb:
+    image: mariadb:11.3
+    container_name: bccs-mariadb-ext      # = externalName trong k8s/test/05-external-db.yaml
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD:-Bccs_Root_2026}
+      MARIADB_DATABASE: ${DB_NAME:-bccs_catalog}
+      MARIADB_USER: ${DB_USER:-bccs_app}
+      MARIADB_PASSWORD: ${DB_PASSWORD:-Bccs_App_2026}
+    ports:
+      - "3307:3306"
+    volumes:
+      - bccs-extdb-data:/var/lib/mysql
+      # schema gốc (tạo product/offer/partner/rate_limit_tier/partner_rate_limit) — chạy lần đầu
+      - ../../product-catalog-service/src/main/resources/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - kind
+
+volumes:
+  bccs-extdb-data:
+
+# Mạng "kind" do kind tạo sẵn khi dựng cụm. external: true = dùng lại, không tạo mới.
+networks:
+  kind:
+    external: true
