@@ -47,10 +47,16 @@
         </appender>
     </springProfile>
 
-    <root level="INFO">
-        <appender-ref ref="JSON_CONSOLE"/>
-        <springProfile name="!local">
+    <!-- springProfile phải BỌC NGOÀI <root>; lồng bên trong làm hỏng root (mất appender → mất log) -->
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
+        </root>
+    </springProfile>
+    <springProfile name="!local">
+        <root level="INFO">
+            <appender-ref ref="JSON_CONSOLE"/>
             <appender-ref ref="LOGSTASH"/>
-        </springProfile>
-    </root>
+        </root>
+    </springProfile>
 </configuration>

@@ -1,0 +1,293 @@
+-- 1. Bảng PRODUCT_OFFERING
+CREATE TABLE PRODUCT_OFFERING
+(
+    PRODUCT_OFFERING_ID         INT NOT NULL,
+    PRODUCT_SPEC_ID              INT,
+    PRODUCT_OFFER_TYPE_ID        INT,
+    NAME                         VARCHAR(500),
+    CODE                         VARCHAR(50),
+    SUB_TYPE                     VARCHAR(1),
+    TELECOM_SERVICE_ID           INT,
+    DESCRIPTION                  VARCHAR(512),
+    STATUS                       VARCHAR(1),
+    EFFECT_DATETIME              DATETIME,
+    EXPIRE_DATETIME              DATETIME,
+    CREATE_USER                  VARCHAR(50),
+    CREATE_DATETIME              DATETIME,
+    UPDATE_USER                  VARCHAR(50),
+    UPDATE_DATETIME              DATETIME,
+    VERSION                      VARCHAR(50),
+    CHECK_SERIAL                 TINYINT,
+    CHECK_DEPOSIT                TINYINT,
+    UNIT                         VARCHAR(10),
+    ACCOUNTING_MODEL_CODE        VARCHAR(50),
+    ACCOUNTING_MODEL_NAME        VARCHAR(100),
+    ACCOUNTING_NAME              VARCHAR(100),
+    ACCOUNTING_CODE              VARCHAR(50),
+    DEMO_DURATION                INT,
+    IS_DEMO                      TINYINT,
+    DEVICE_TYPE                  VARCHAR(20),
+    TRANSCEIVER                  TINYINT,
+    STOCK_MODEL_TYPE             TINYINT,
+    OWNER_SHOP_ID                INT,
+    RETURN_STOCK_WHEN_CANCELLED  VARCHAR(2),
+    RETURN_STOCK_WHEN_CANCELLED1 VARCHAR(2),
+    SAP_MATERIAL_NUMBER          INT,
+    USAGE_ID                     VARCHAR(100),
+    DISTRIBUTE                   VARCHAR(1),
+    NUM_MONTH                    INT,
+    IS_BUNDLE                    VARCHAR(10),
+    SAP_PRODUCT_TYPE             VARCHAR(1),
+    CONSTRAINT PRO_OFF_PK PRIMARY KEY (PRODUCT_OFFERING_ID)
+);
+
+-- 2. Bảng PRODUCT_OFFER_CHAR_USE
+CREATE TABLE PRODUCT_OFFER_CHAR_USE
+(
+    PRODUCT_OFFER_CHAR_USE_ID  INT NOT NULL,
+    ORDER_CHAR                 INT,
+    TYPE                       VARCHAR(1),
+    PRODUCT_OFFERING_ID        INT,
+    PRODUCT_SPEC_CHAR_VALUE_ID INT,
+    PRODUCT_SPEC_CHAR_ID       INT NOT NULL,
+    CREATE_USER                VARCHAR(50),
+    CREATE_DATETIME            DATETIME,
+    UPDATE_USER                VARCHAR(50),
+    UPDATE_DATETIME            DATETIME,
+    STATUS                     VARCHAR(1),
+    SPECIFIC_VALUE             VARCHAR(500) DEFAULT NULL,
+    EFFECT_DATETIME            DATETIME,
+    EXPIRE_DATETIME            DATETIME,
+    LIMITED                    TINYINT,
+    DESCRIPTION                VARCHAR(1000),
+    CONSTRAINT POC_USE_PK PRIMARY KEY (PRODUCT_OFFER_CHAR_USE_ID)
+);
+
+-- 3. Bảng PRODUCT_SPEC_CHAR
+CREATE TABLE PRODUCT_SPEC_CHAR
+(
+    PRODUCT_SPEC_CHAR_ID      INT NOT NULL,
+    NAME                      VARCHAR(500) NOT NULL,
+    DESCRIPTION               VARCHAR(512),
+    VALUE_TYPE                VARCHAR(2),
+    CHAR_TYPE                 VARCHAR(2),
+    MIN_CARDINALITY           INT,
+    MAX_CARDINALITY           INT,
+    STATUS                    VARCHAR(1),
+    CREATE_USER               VARCHAR(50),
+    CREATE_DATETIME           DATETIME,
+    UPDATE_USER               VARCHAR(50),
+    UPDATE_DATETIME           DATETIME,
+    CODE                      VARCHAR(200),
+    PRODUCT_SPEC_CHAR_TYPE_ID VARCHAR(100),
+    VALUE_SET_TYPE            TINYINT DEFAULT NULL,
+    RESPONSE_CLASS            VARCHAR(50),
+    SQL_QUERY                 VARCHAR(500),
+    DISPLAY_OBJECT            VARCHAR(50),
+    VALUE_OBJECT              VARCHAR(50),
+    SOLR_QUERY                VARCHAR(500),
+    SOLR_CORE                 VARCHAR(50),
+    SOLR_SCHEMA               VARCHAR(50),
+    DATA_TYPE                 VARCHAR(40),
+    WS_WSDL                   VARCHAR(4000),
+    TEMPLATE_REQUEST          LONGTEXT,
+    VALIDATE_PATTERN          VARCHAR(1000),
+    EXT_DATA                  VARCHAR(1000),
+    NOTE                      VARCHAR(256),
+    CONSTRAINT PS_CHAR_PK PRIMARY KEY (PRODUCT_SPEC_CHAR_ID)
+);
+
+-- 4. Bảng PRODUCT_SPEC_CHAR_VALUE
+CREATE TABLE PRODUCT_SPEC_CHAR_VALUE
+(
+    PRODUCT_SPEC_CHAR_VALUE_ID INT NOT NULL,
+    PRODUCT_SPEC_CHAR_ID       INT NOT NULL,
+    VALUE_TYPE                 VARCHAR(10),
+    IS_DEFAULT                 TINYINT NOT NULL,
+    VALUE                      VARCHAR(4000),
+    UNIT_OF_MEASURE            VARCHAR(10),
+    VALUE_FROM                 VARCHAR(4000),
+    VALUE_TO                   VARCHAR(4000),
+    RANGE_INTERVAL             VARCHAR(10),
+    STATUS                     VARCHAR(1),
+    CREATE_USER                VARCHAR(50),
+    CREATE_DATETIME            DATETIME,
+    UPDATE_USER                VARCHAR(50),
+    UPDATE_DATETIME            DATETIME,
+    NAME                       VARCHAR(500),
+    SPECIFIC_VALUE             LONGTEXT,
+    NOTE                       VARCHAR(256),
+    CONSTRAINT PSC_VALUE_PK PRIMARY KEY (PRODUCT_SPEC_CHAR_VALUE_ID)
+);
+
+-- 5. Bảng PRODUCT_SPECIFICATION
+CREATE TABLE PRODUCT_SPECIFICATION
+(
+    PRODUCT_SPEC_ID      INT NOT NULL,
+    PRODUCT_SPEC_TYPE_ID INT NOT NULL,
+    NAME                 VARCHAR(50),
+    DESCRIPTION          VARCHAR(512),
+    STATUS               VARCHAR(1) NOT NULL,
+    CREATE_USER          VARCHAR(50),
+    CREATE_DATETIME      DATETIME,
+    UPDATE_USER          VARCHAR(50),
+    UPDATE_DATETIME      DATETIME,
+    EFFECT_DATETIME      DATETIME,
+    EXPIRE_DATETIME      DATETIME,
+    SEPARATE_CHAR        VARCHAR(10),
+    START_LINE           INT,
+    EXTEND               VARCHAR(10),
+    CODE                 VARCHAR(50),
+    TELECOM_SERVICE_ID   INT,
+    CONSTRAINT PRODUCT_SPEC_PK PRIMARY KEY (PRODUCT_SPEC_ID)
+);
+
+-- 6. Bảng PRODUCT_SPEC_CHAR_USE
+CREATE TABLE PRODUCT_SPEC_CHAR_USE
+(
+    PROD_SPEC_CHAR_USE_ID      INT NOT NULL,
+    ORDER_CHAR                 INT,
+    PRODUCT_SPEC_ID            INT NOT NULL,
+    PRODUCT_SPEC_CHAR_ID       INT NOT NULL,
+    PRODUCT_SPEC_CHAR_VALUE_ID INT,
+    STATUS                     VARCHAR(1),
+    CREATE_USER                CHAR(50),
+    CREATE_DATETIME            DATETIME,
+    UPDATE_USER                VARCHAR(50),
+    UPDATE_DATETIME            DATETIME,
+    SYSTEM_TYPE                VARCHAR(100),
+    SPECIFIC_VALUE             VARCHAR(4000),
+    CONFIG_PHASE               VARCHAR(200),
+    MIN                        INT,
+    MAX                        INT,
+    IS_REQUIRED                VARCHAR(1),
+    NOTE                       VARCHAR(2000),
+    CONSTRAINT PSCVU_PK PRIMARY KEY (PROD_SPEC_CHAR_USE_ID)
+);
+
+-- 7. Bảng PRODUCT_OFFER_TEMPLATE
+CREATE TABLE PRODUCT_OFFER_TEMPLATE
+(
+    PRODUCT_OFFER_TEMPLATE_ID BIGINT NOT NULL,
+    PRODUCT_OFFERING_ID       BIGINT NOT NULL,
+    TEMPLATE_CODE             VARCHAR(100) NOT NULL,
+    TEMPLATE_NAME             VARCHAR(100) NOT NULL,
+    STATUS                    TINYINT,
+    DESCRIPTION               VARCHAR(500),
+    CREATE_DATETIME           DATETIME,
+    CREATE_USER               VARCHAR(200),
+    UPDATE_DATETIME           DATETIME,
+    UPDATE_USER               VARCHAR(200),
+    CHANNEL_TYPE_ID           INT,
+    AREA_CODE                 VARCHAR(200),
+    IMAGE_LINK                VARCHAR(4000),
+    PHASE_HUB                 VARCHAR(200),
+    UNIT_PRICE                BIGINT,
+    IS_SME_SERVICE            TINYINT
+);
+
+-- 8. Bảng TEMPLATE_CHAR_USE
+CREATE TABLE TEMPLATE_CHAR_USE
+(
+    TEMPLATE_CHAR_USE_ID      BIGINT NOT NULL,
+    PRODUCT_OFFER_TEMPLATE_ID BIGINT NOT NULL,
+    PRODUCT_SPEC_CHAR_ID      BIGINT NOT NULL,
+    SPECIFIC_VALUE            VARCHAR(50),
+    CONFIG_PHASE              VARCHAR(200),
+    NO                        INT,
+    STATUS                    TINYINT,
+    CREATE_DATETIME           DATETIME,
+    CREATE_USER               VARCHAR(200),
+    UPDATE_DATETIME           DATETIME,
+    UPDATE_USER               VARCHAR(200),
+    SUB_VALUE                 VARCHAR(50)
+);
+
+-- 9. Bảng PRODUCT_OFFER_PRICE
+CREATE TABLE PRODUCT_OFFER_PRICE
+(
+    PRODUCT_OFFER_PRICE_ID BIGINT NOT NULL,
+    PRODUCT_OFFERING_ID    INT,
+    PRICE_POLICY_ID        INT,
+    PRICE_TYPE_ID          INT,
+    NAME                   VARCHAR(50),
+    DESCRIPTION            VARCHAR(2000),
+    PRICE                  BIGINT,
+    VAT                    INT,
+    PLEDGE_AMOUNT          INT,
+    PLEDGE_TIME            INT,
+    PRIOR_PAY              INT,
+    STATUS                 VARCHAR(1),
+    EFFECT_DATETIME        DATETIME,
+    EXPIRE_DATETIME        DATETIME,
+    PRIORITY               TINYINT,
+    EFFECT_TYPE            VARCHAR(1),
+    CRON_EXPRESSION        VARCHAR(50),
+    CREATE_USER            VARCHAR(50),
+    CREATE_DATETIME        DATETIME,
+    UPDATE_USER            VARCHAR(50),
+    UPDATE_DATETIME        DATETIME,
+    PROGRAM_CODE           VARCHAR(50),
+    PROGRAM_MONTH          INT,
+    IS_SELECT_ALL_SHOP     VARCHAR(10),
+    LIMITED                TINYINT,
+    CONSTRAINT PRODUCT_OFFER_PRICE_PK PRIMARY KEY (PRODUCT_OFFER_PRICE_ID)
+);
+
+-- 10. Bảng PRODUCT_OFFER_PRICE_EXT
+CREATE TABLE PRODUCT_OFFER_PRICE_EXT
+(
+    PRODUCT_OFFER_PRICE_EXT_ID INT NOT NULL,
+    PRODUCT_OFFER_PRICE_ID     INT,
+    `KEY`                      VARCHAR(50), -- Bọc trong dấu backtick vì KEY là từ khóa của MariaDB
+    VALUE                      VARCHAR(200),
+    STATUS                     VARCHAR(1),
+    CREATE_USER                VARCHAR(50),
+    CREATE_DATETIME            DATETIME,
+    UPDATE_USER                VARCHAR(50),
+    UPDATE_DATETIME            DATETIME,
+    CHECK_DISPLAY              VARCHAR(1),
+    FROM_VALUE                 INT,
+    TO_VALUE                   INT,
+    DESCRIPTION                VARCHAR(512),
+    EFFECT_DATETIME            DATETIME,
+    EXPIRE_DATETIME            DATETIME
+);
+
+-- 11. Bảng PRODUCT_OFFER_RELATION
+CREATE TABLE PRODUCT_OFFER_RELATION
+(
+    PRODUCT_OFFER_RELATION_ID INT NOT NULL,
+    RELATION_TYPE_ID          INT NOT NULL,
+    MAIN_OFFER_ID             INT NOT NULL,
+    RELATION_OFFER_ID         INT NOT NULL,
+    STATUS                    VARCHAR(1),
+    CREATE_USER               VARCHAR(50),
+    CREATE_DATETIME           DATETIME,
+    UPDATE_USER               VARCHAR(50),
+    UPDATE_DATETIME           DATETIME,
+    CONFIG_PHASE              VARCHAR(200),
+    DESCRIPTION               VARCHAR(512),
+    EFFECT_DATETIME           DATETIME,
+    EXPIRE_DATETIME           DATETIME,
+    CONSTRAINT PRODUCT_OFFER_RELATION_PK PRIMARY KEY (PRODUCT_OFFER_RELATION_ID)
+);
+
+-- 12. Bảng PRODUCT_OFFER_RELATION_DETAIL
+CREATE TABLE PRODUCT_OFFER_RELATION_DETAIL
+(
+    PRODUCT_OFFER_RELATION_DETAIL BIGINT NOT NULL,
+    PRODUCT_OFFER_RELATION_ID     INT,
+    PRODUCT_SPEC_CHAR_ID          INT,
+    PRODUCT_SPEC_CHAR_VALUE_ID    INT,
+    STATUS                        VARCHAR(1),
+    CREATE_USER                   VARCHAR(50),
+    CREATE_DATETIME               DATETIME,
+    UPDATE_USER                   VARCHAR(50),
+    UPDATE_DATETIME               DATETIME,
+    SPECIFIC_VALUE                VARCHAR(50),
+    DESCRIPTION                   VARCHAR(512),
+    EFFECT_DATETIME               DATETIME,
+    EXPIRE_DATETIME               DATETIME,
+    CONSTRAINT PO_RELATION_DETAIL_PK PRIMARY KEY (PRODUCT_OFFER_RELATION_DETAIL)
+);
